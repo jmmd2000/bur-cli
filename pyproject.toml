@@ -1,7 +1,7 @@
 [project]
 name = "bur"
 version = "0.1.0"
-description = "Add your description here"
+description = "Back up and restore dockerised Postgres databases, encrypted and pushed to Cloudflare R2"
 readme = "README.md"
 authors = [
     { name = "James Doyle", email = "jamesmddoyle@gmail.com" }
@@ -24,3 +24,22 @@ dev = [
     "pytest>=9.0.3",
     "ruff>=0.15.15",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["bur"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

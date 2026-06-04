@@ -82,6 +82,7 @@ def test_empty_age_recipients_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="age_recipients"):
         load_config(_write(tmp_path, body))
 
+
 def test_wrong_type_errors_by_name(tmp_path: Path) -> None:
     body = 'backup_root = "/backups"\nage_recipients = ["age1abc"]\nretention_keep = "ten"'
     with pytest.raises(ConfigError, match="retention_keep"):

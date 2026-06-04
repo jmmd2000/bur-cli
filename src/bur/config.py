@@ -48,7 +48,7 @@ def load_config(path: Path | str | None = None) -> Config:
 
     :param path: Explicit config path, falls back to ``$BUR_CONFIG``
     :returns: The validated configuration with defaults applied
-    :raises ConfigError: If no path is given, the file is missing or not valid 
+    :raises ConfigError: If no path is given, the file is missing or not valid
     TOML, or any field is missing, empty or the wrong type.
     """
     resolved = _resolve_path(path)

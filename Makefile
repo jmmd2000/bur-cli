@@ -1,4 +1,4 @@
-.PHONY: check fmt test
+.PHONY: check format test
 
 check:
 	uv run ruff check

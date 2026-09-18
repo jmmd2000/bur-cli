@@ -52,6 +52,24 @@ def dump_globals(container: str, user: str) -> subprocess.Popen[bytes]:
     return subprocess.Popen(command, stdout=subprocess.PIPE)
 
 
+def database_size(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
+    """Query a database's on-disk size in bytes, streamed to stdout
+
+    Reports the raw ``pg_database_size`` of the database.
+
+    :param container: Container running the db
+    :param db: Database to check
+    :param user: Role to connect as
+    :returns: The running process, the size in bytes on ``stdout``
+    """
+    inner = (
+        f"psql -tAc 'SELECT pg_database_size(current_database())' "
+        f"-U {shlex.quote(user)} -d {shlex.quote(db)}"
+    )
+    command = _exec_command(container, inner)
+    return subprocess.Popen(command, stdout=subprocess.PIPE)
+
+
 def restore(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
     """``pg_restore`` a custom format dump from stdin
 

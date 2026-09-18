@@ -1,4 +1,7 @@
-.PHONY: check format test
+.PHONY: check format test hooks
+
+hooks:
+	uv run pre-commit install
 
 check:
 	uv run ruff check

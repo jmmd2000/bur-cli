@@ -68,3 +68,12 @@ def test_open_backup_reads_the_file(tmp_path: Path) -> None:
     storage.write(tmp_path, "app", name, io.BytesIO(b"payload"))
     with storage.open_backup(tmp_path, "app", name) as handle:
         assert handle.read() == b"payload"
+
+
+def test_free_space_reports_available_bytes(tmp_path: Path) -> None:
+    assert storage.free_space(tmp_path) > 0
+
+
+def test_free_space_handles_a_root_that_does_not_exist_yet(tmp_path: Path) -> None:
+    missing = tmp_path / "not" / "created" / "yet"
+    assert storage.free_space(missing) > 0

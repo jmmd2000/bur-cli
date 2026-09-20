@@ -1,2 +1,5 @@
 def main() -> None:
-    print("Hello from bur!")
+    """Run the bur command line"""
+    from bur.cli import app
+
+    app()

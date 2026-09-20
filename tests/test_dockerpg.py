@@ -100,3 +100,19 @@ def test_check_rejects_an_unfinished_process() -> None:
     finally:
         process.kill()
         process.wait()
+
+
+def test_database_size_queries_pg_database_size(popen_calls: list[_FakePopen]) -> None:
+    dockerpg.database_size("app-db", "app", "appuser")
+    call = popen_calls[-1]
+    assert call.args[-1] == (
+        'PGPASSWORD="${POSTGRES_PASSWORD:-}" '
+        "psql -tAc 'SELECT pg_database_size(current_database())' -U appuser -d app"
+    )
+    assert call.kwargs["stdout"] is subprocess.PIPE
+
+
+def test_database_size_shell_quotes_user_and_db(popen_calls: list[_FakePopen]) -> None:
+    dockerpg.database_size("app-db", "a; rm -rf /", "ro le")
+    inner = popen_calls[-1].args[-1]
+    assert inner.endswith("-U 'ro le' -d 'a; rm -rf /'")

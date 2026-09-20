@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -31,7 +31,7 @@ class BackupFile:
 
 
 @contextmanager
-def atomic_write(root: Path, app: str, name: str) -> Iterator[IO[bytes]]:
+def atomic_write(root: Path, app: str, name: str) -> Generator[IO[bytes]]:
     """Open a temp file to write a backup, renamed on clean exit
 
     :param root: Backup root directory
@@ -113,3 +113,18 @@ def open_backup(root: Path, app: str, name: str) -> IO[bytes]:
     :returns: An open binary stream for the file
     """
     return (root / app / name).open("rb")
+
+
+def free_space(root: Path) -> int:
+    """Check the free space on the filesystem holding the backup root
+
+    :param root: Directory to check
+    :returns: Free space in bytes
+    """
+    directory = root
+    while not directory.exists():
+        parent = directory.parent
+        if parent == directory:
+            break
+        directory = parent
+    return shutil.disk_usage(directory).free

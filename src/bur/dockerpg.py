@@ -14,11 +14,8 @@ import shlex
 import subprocess
 
 _PGPASSWORD_PREFIX = 'PGPASSWORD="${POSTGRES_PASSWORD:-}"'
-_ROW_COUNTS_SQL = (
-    "SELECT schemaname || '.' || relname, "
-    "(xpath('/row/c/text()', query_to_xml("
-    "format('SELECT count(*) AS c FROM %I.%I', schemaname, relname), false, true, ''"
-    ")))[1]::text::bigint "
+_TABLE_NAMES_SQL = (
+    "SELECT quote_ident(schemaname) || '.' || quote_ident(relname) "
     "FROM pg_stat_user_tables ORDER BY 1"
 )
 
@@ -77,17 +74,34 @@ def database_size(container: str, db: str, user: str) -> subprocess.Popen[bytes]
     return subprocess.Popen(command, stdout=subprocess.PIPE)
 
 
-def row_counts(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
-    """List each user table and its row count, streamed to stdout
+def table_names(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
+    """List a database's user tables, one per line, streamed to stdout
 
-    One table per line, as ``<schema>.<table>|<rows>``.
+    Names come back quoted, ready to use in a follow-up query.
 
     :param container: Container running the database
-    :param db: Database to count in
+    :param db: Database to list tables from
     :param user: Role to connect as
     :returns: The running process, one table per line on ``stdout``
     """
-    inner = f"psql -tAc {shlex.quote(_ROW_COUNTS_SQL)} -U {shlex.quote(user)} -d {shlex.quote(db)}"
+    inner = f"psql -tAc {shlex.quote(_TABLE_NAMES_SQL)} -U {shlex.quote(user)} -d {shlex.quote(db)}"
+    command = _exec_command(container, inner)
+    return subprocess.Popen(command, stdout=subprocess.PIPE)
+
+
+def count_rows(container: str, db: str, user: str, table: str) -> subprocess.Popen[bytes]:
+    """Count the rows in one table, streamed to stdout
+
+    :param container: Container running the database
+    :param db: Database the table lives in
+    :param user: Role to connect as
+    :param table: Table to count, as returned by :func:`table_names`
+    :returns: The running process, the row count on ``stdout``
+    """
+    inner = (
+        f"psql -tAc {shlex.quote(f'SELECT count(*) FROM {table}')} "
+        f"-U {shlex.quote(user)} -d {shlex.quote(db)}"
+    )
     command = _exec_command(container, inner)
     return subprocess.Popen(command, stdout=subprocess.PIPE)
 

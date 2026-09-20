@@ -116,3 +116,19 @@ def test_database_size_shell_quotes_user_and_db(popen_calls: list[_FakePopen]) -
     dockerpg.database_size("app-db", "a; rm -rf /", "ro le")
     inner = popen_calls[-1].args[-1]
     assert inner.endswith("-U 'ro le' -d 'a; rm -rf /'")
+
+
+def test_row_counts_lists_every_table(popen_calls: list[_FakePopen]) -> None:
+    dockerpg.row_counts("app-db", "app", "appuser")
+    call = popen_calls[-1]
+    inner = call.args[-1]
+    assert "query_to_xml" in inner
+    assert "FROM pg_stat_user_tables ORDER BY 1" in inner
+    assert inner.endswith("-U appuser -d app")
+    assert call.kwargs["stdout"] is subprocess.PIPE
+
+
+def test_row_counts_shell_quotes_user_and_db(popen_calls: list[_FakePopen]) -> None:
+    dockerpg.row_counts("app-db", "a; rm -rf /", "ro le")
+    inner = popen_calls[-1].args[-1]
+    assert inner.endswith("-U 'ro le' -d 'a; rm -rf /'")

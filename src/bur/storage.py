@@ -30,6 +30,19 @@ class BackupFile:
     timestamp: datetime
 
 
+class BackupNotFound(Exception):
+    """No complete backup pair for the requested app and timestamp"""
+
+
+@dataclass(frozen=True)
+class BackupPair:
+    """The dump and globals artefacts from one backup run"""
+
+    dump_name: str
+    globals_name: str
+    timestamp: datetime
+
+
 @contextmanager
 def atomic_write(root: Path, app: str, name: str) -> Generator[IO[bytes]]:
     """Open a temp file to write a backup, renamed on clean exit
@@ -128,3 +141,33 @@ def free_space(root: Path) -> int:
             break
         directory = parent
     return shutil.disk_usage(directory).free
+
+
+def find_backup_pair(root: Path, app: str, timestamp: datetime | None = None) -> BackupPair:
+    """Find one run's dump and globals artefacts
+
+    :param root: Backup root directory
+    :param app: Application to look up
+    :param timestamp: Run to find, defaults to the newest
+    :returns: The two artefact names and the timestamp they share
+    :raises BackupNotFound: If there are no backups, the timestamp is unknown, or that run is
+    missing one of its two artefacts"""
+    runs: dict[datetime, dict[str, str]] = {}
+    for backup in list_backups(root, app):
+        parsed = parse(backup.name)
+        runs.setdefault(parsed.timestamp, {})[parsed.kind] = backup.name
+
+    if not runs:
+        raise BackupNotFound(f"no backups for {app} under {root}")
+
+    chosen = max(runs) if timestamp is None else timestamp
+    artefacts = runs.get(chosen)
+    if artefacts is None:
+        raise BackupNotFound(f"no backup for {app} at {chosen.isoformat()}")
+
+    missing = sorted({"dump", "globals"} - set(artefacts))
+    if missing:
+        raise BackupNotFound(
+            f"backup for {app} at {chosen.isoformat()} is missing its {' and '.join(missing)}"
+        )
+    return BackupPair(artefacts["dump"], artefacts["globals"], chosen)

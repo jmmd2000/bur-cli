@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from bur import storage
-from bur.naming import build
+from bur.naming import ArtefactKind, build
 
 
 def test_atomic_write_creates_the_file(tmp_path: Path) -> None:
@@ -77,3 +77,55 @@ def test_free_space_reports_available_bytes(tmp_path: Path) -> None:
 def test_free_space_handles_a_root_that_does_not_exist_yet(tmp_path: Path) -> None:
     missing = tmp_path / "not" / "created" / "yet"
     assert storage.free_space(missing) > 0
+
+
+def _write_pair(root: Path, app: str, when: datetime) -> None:
+    kinds: tuple[ArtefactKind, ...] = ("dump", "globals")
+    for kind in kinds:
+        storage.write(root, app, build(app, when, kind), io.BytesIO(b"payload"))
+
+
+def test_find_backup_pair_returns_the_newest_run(tmp_path: Path) -> None:
+    older = datetime(2026, 1, 1, tzinfo=UTC)
+    newer = datetime(2026, 2, 1, tzinfo=UTC)
+    _write_pair(tmp_path, "app", older)
+    _write_pair(tmp_path, "app", newer)
+
+    pair = storage.find_backup_pair(tmp_path, "app")
+
+    assert pair.timestamp == newer
+    assert pair.dump_name == build("app", newer, "dump")
+    assert pair.globals_name == build("app", newer, "globals")
+
+
+def test_find_backup_pair_finds_a_specific_run(tmp_path: Path) -> None:
+    older = datetime(2026, 1, 1, tzinfo=UTC)
+    newer = datetime(2026, 2, 1, tzinfo=UTC)
+    _write_pair(tmp_path, "app", older)
+    _write_pair(tmp_path, "app", newer)
+
+    pair = storage.find_backup_pair(tmp_path, "app", older)
+
+    assert pair.timestamp == older
+    assert pair.dump_name == build("app", older, "dump")
+
+
+def test_find_backup_pair_needs_both_artefacts(tmp_path: Path) -> None:
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    storage.write(tmp_path, "app", build("app", when, "dump"), io.BytesIO(b"payload"))
+
+    with pytest.raises(storage.BackupNotFound) as excinfo:
+        storage.find_backup_pair(tmp_path, "app")
+    assert "globals" in str(excinfo.value)
+
+
+def test_find_backup_pair_raises_when_there_are_none(tmp_path: Path) -> None:
+    with pytest.raises(storage.BackupNotFound):
+        storage.find_backup_pair(tmp_path, "app")
+
+
+def test_find_backup_pair_raises_for_an_unknown_timestamp(tmp_path: Path) -> None:
+    _write_pair(tmp_path, "app", datetime(2026, 1, 1, tzinfo=UTC))
+
+    with pytest.raises(storage.BackupNotFound):
+        storage.find_backup_pair(tmp_path, "app", datetime(2020, 1, 1, tzinfo=UTC))

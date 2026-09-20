@@ -78,3 +78,15 @@ def parse(name: str) -> ParsedName:
     timestamp = datetime.strptime(match["timestamp"], _TIMESTAMP_FORMAT).replace(tzinfo=UTC)
 
     return ParsedName(app=match["app"], timestamp=timestamp, kind=_SUFFIX_TO_KIND[match["suffix"]])
+
+
+def parse_timestamp(text: str) -> datetime:
+    """Parse a backup timestamp in the filename format
+
+    :param text: Timestamp text
+    :returns: The timestamp in UTC
+    :raises: InvalidBackupName: If the text is not in the filename format"""
+    try:
+        return datetime.strptime(text, _TIMESTAMP_FORMAT).replace(tzinfo=UTC)
+    except ValueError as error:
+        raise InvalidBackupName(f"not a backup timestamp: {text!r}") from error

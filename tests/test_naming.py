@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-from bur.naming import InvalidBackupName, build, parse
+from bur.naming import InvalidBackupName, build, parse, parse_timestamp
 
 
 def test_round_trips_app_and_timestamp() -> None:
@@ -70,3 +70,12 @@ def test_empty_app_is_rejected() -> None:
 def test_malformed_names_raise(name: str) -> None:
     with pytest.raises(InvalidBackupName):
         parse(name)
+
+
+def test_parse_timestamp_reads_the_filename_format() -> None:
+    assert parse_timestamp("20260603T174800Z") == datetime(2026, 6, 3, 17, 48, tzinfo=UTC)
+
+
+def test_parse_timestamp_rejects_other_shapes() -> None:
+    with pytest.raises(InvalidBackupName):
+        parse_timestamp("2026-06-03")

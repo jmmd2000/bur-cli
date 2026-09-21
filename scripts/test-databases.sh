@@ -8,11 +8,15 @@ PASSWORD="burtestpw"
 usage() {
     cat <<'EOF'
 Usage:
-  test-databases.sh up [count] [versions...]   Create and seed containers (default: 1 16)
-  test-databases.sh down                       Remove the containers this script created
-  test-databases.sh status                     List the containers this script created
+  test-databases.sh up [--unlabelled] [count] [versions...]
+                                     Create and seed containers (default: 1 16)
+  test-databases.sh down             Remove the containers this script created
+  test-databases.sh status           List the containers this script created
 
 Versions cycle round-robin, so "up 4 15 16" makes two of each.
+
+Containers carry bur.* labels so bur discovers them. --unlabelled leaves those
+off and names them bur_plain_*, so they show up in bur's audit instead.
 EOF
 }
 
@@ -46,6 +50,14 @@ SQL
 }
 
 up() {
+    local prefix="bur_test"
+    local labelled=true
+    if [[ ${1:-} == "--unlabelled" ]]; then
+        prefix="bur_plain"
+        labelled=false
+        shift
+    fi
+
     local count=${1:-1}
     shift || true
     local versions=("$@")
@@ -59,17 +71,23 @@ up() {
 
     for ((index = 0; index < count; index++)); do
         local version=${versions[index % ${#versions[@]}]}
-        local name="bur_test_$((index + 1))_pg${version}"
+        local name="${prefix}_$((index + 1))_pg${version}"
 
         if docker ps -aq --filter "name=^${name}$" | grep -q .; then
             echo "$name already exists, skipping"
             continue
         fi
 
+        local bur_labels=()
+        if [[ $labelled == true ]]; then
+            bur_labels=(--label "bur.enable=true" --label "bur.user=$name")
+        fi
+
         echo "creating $name (postgres:$version)"
         docker run -d \
             --name "$name" \
             --label "$LABEL" \
+            "${bur_labels[@]}" \
             -e POSTGRES_PASSWORD="$PASSWORD" \
             -e POSTGRES_USER="$name" \
             -e POSTGRES_DB="$name" \

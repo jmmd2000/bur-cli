@@ -1,4 +1,4 @@
-.PHONY: check format test hooks
+.PHONY: check format test test-integration hooks
 
 hooks:
 	uv run pre-commit install
@@ -11,4 +11,7 @@ format:
 	uv run ruff format
 
 test:
-	uv run pytest
+	uv run pytest -m "not integration"
+
+test-integration:
+	uv run pytest -m integration

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from bur import discovery
-from bur.discovery import DiscoveryError
+from bur.config import Config
+from bur.discovery import ContainerInfo, DiscoveryError, InvalidLabel
 
 _INSPECT = json.dumps(
     [
@@ -97,3 +99,89 @@ def test_a_docker_failure_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(DiscoveryError) as excinfo:
         discovery.inspect_running()
     assert "docker daemon" in str(excinfo.value)
+
+
+def _container(labels: dict[str, str], name: str = "giftring-db-1") -> ContainerInfo:
+    return ContainerInfo(name=name, image="postgres:16", labels=labels)
+
+
+def _config(exclude: tuple[str, ...] = (), keep: int = 10) -> Config:
+    return Config(
+        backup_root=Path("/backups"),
+        age_recipients=("age1abc",),
+        retention_keep=keep,
+        exclude=exclude,
+    )
+
+
+def test_defaults_come_from_the_container_and_the_config() -> None:
+    target = discovery.resolve(_container({"bur.enable": "true"}), _config(keep=7))
+
+    assert target.container == "giftring-db-1"
+    assert target.app == "giftring-db-1"
+    assert target.database == "giftring-db-1"
+    assert target.user == "postgres"
+    assert target.retention_keep == 7
+    assert target.schedule == "daily"
+    assert target.excluded is False
+
+
+def test_labels_override_the_defaults() -> None:
+    labels = {
+        "bur.enable": "true",
+        "bur.app": "giftring",
+        "bur.database": "gift",
+        "bur.user": "gift_owner",
+        "bur.retention.keep": "3",
+        "bur.schedule": "weekly",
+    }
+
+    target = discovery.resolve(_container(labels), _config())
+
+    assert target.app == "giftring"
+    assert target.database == "gift"
+    assert target.user == "gift_owner"
+    assert target.retention_keep == 3
+    assert target.schedule == "weekly"
+
+
+def test_a_traversing_app_name_is_rejected() -> None:
+    with pytest.raises(InvalidLabel) as excinfo:
+        discovery.resolve(_container({"bur.app": "../../etc"}), _config())
+    assert "bur.app" in str(excinfo.value)
+
+
+def test_a_hostile_database_or_user_is_rejected() -> None:
+    with pytest.raises(InvalidLabel):
+        discovery.resolve(_container({"bur.database": "a; drop database x"}), _config())
+    with pytest.raises(InvalidLabel):
+        discovery.resolve(_container({"bur.user": "../root"}), _config())
+
+
+def test_a_container_name_that_is_not_a_valid_app_name_is_rejected() -> None:
+    with pytest.raises(InvalidLabel):
+        discovery.resolve(_container({}, name="MyApp.db"), _config())
+
+
+def test_an_excluded_app_is_resolved_and_marked() -> None:
+    target = discovery.resolve(_container({"bur.app": "giftring"}), _config(exclude=("giftring",)))
+
+    assert target.app == "giftring"
+    assert target.excluded is True
+
+
+def test_a_bad_retention_keep_is_rejected() -> None:
+    with pytest.raises(InvalidLabel):
+        discovery.resolve(_container({"bur.retention.keep": "loads"}), _config())
+    with pytest.raises(InvalidLabel):
+        discovery.resolve(_container({"bur.retention.keep": "0"}), _config())
+
+
+def test_discover_filters_on_the_enable_label(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+    _patch_docker(monkeypatch, calls, "abc123\n", _INSPECT)
+
+    targets = discovery.discover(_config())
+
+    assert calls[0] == ["docker", "ps", "-q", "--filter", "label=bur.enable=true"]
+    assert [target.app for target in targets] == ["giftring"]

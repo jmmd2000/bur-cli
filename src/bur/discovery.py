@@ -88,6 +88,20 @@ def discover(config: Config) -> list[DBTarget]:
     return [resolve(container, config) for container in containers]
 
 
+def audit(config: Config) -> list[ContainerInfo]:
+    """Find running postgres containers that never opted in
+
+    :param config: Loaded config
+    :returns: Containers whose image matches but which carry no ``bur.enable`` label
+    :raises DiscoveryError: If docker could not be listed or inspected
+    """
+    return [
+        container
+        for container in inspect_running()
+        if config.postgres_image_match in container.image and _ENABLE_LABEL not in container.labels
+    ]
+
+
 def resolve(container: ContainerInfo, config: Config) -> DBTarget:
     """Resolve one containers labels into a database target
 

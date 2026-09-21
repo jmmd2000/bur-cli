@@ -105,11 +105,12 @@ def _container(labels: dict[str, str], name: str = "giftring-db-1") -> Container
     return ContainerInfo(name=name, image="postgres:16", labels=labels)
 
 
-def _config(exclude: tuple[str, ...] = (), keep: int = 10) -> Config:
+def _config(exclude: tuple[str, ...] = (), keep: int = 10, image_match: str = "postgres") -> Config:
     return Config(
         backup_root=Path("/backups"),
         age_recipients=("age1abc",),
         retention_keep=keep,
+        postgres_image_match=image_match,
         exclude=exclude,
     )
 
@@ -185,3 +186,53 @@ def test_discover_filters_on_the_enable_label(monkeypatch: pytest.MonkeyPatch) -
 
     assert calls[0] == ["docker", "ps", "-q", "--filter", "label=bur.enable=true"]
     assert [target.app for target in targets] == ["giftring"]
+
+
+_MIXED = json.dumps(
+    [
+        {
+            "Name": "/giftring-db-1",
+            "Config": {"Image": "postgres:16", "Labels": {"bur.enable": "true"}},
+        },
+        {
+            "Name": "/forgotten-db-1",
+            "Config": {"Image": "postgres:15-alpine", "Labels": {}},
+        },
+        {
+            "Name": "/optedout-db-1",
+            "Config": {"Image": "postgres:16", "Labels": {"bur.enable": "false"}},
+        },
+        {
+            "Name": "/jenkins",
+            "Config": {"Image": "jenkins/jenkins:lts", "Labels": {}},
+        },
+    ]
+)
+
+
+def test_audit_finds_only_the_unlabelled_postgres_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+    _patch_docker(monkeypatch, calls, "a\nb\nc\nd\n", _MIXED)
+
+    unlabelled = discovery.audit(_config())
+
+    assert [container.name for container in unlabelled] == ["forgotten-db-1"]
+    assert calls[0] == ["docker", "ps", "-q"]
+
+
+def test_audit_ignores_a_deliberate_opt_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_docker(monkeypatch, [], "a\nb\nc\nd\n", _MIXED)
+
+    names = [container.name for container in discovery.audit(_config())]
+
+    assert "optedout-db-1" not in names
+
+
+def test_audit_uses_the_configured_image_match(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_docker(monkeypatch, [], "a\nb\nc\nd\n", _MIXED)
+
+    unlabelled = discovery.audit(_config(image_match="jenkins"))
+
+    assert [container.name for container in unlabelled] == ["jenkins"]

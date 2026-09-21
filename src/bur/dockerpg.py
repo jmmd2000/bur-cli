@@ -131,7 +131,7 @@ def restore_globals(container: str, user: str) -> subprocess.Popen[bytes]:
     Talks to the ``postgres`` database since the target may not exist yet, and
     skips ``ON_ERROR_STOP`` so re-running is fine.
     """
-    inner = f"psql -U {shlex.quote(user)} -d postgres"
+    inner = f"psql -q -U {shlex.quote(user)} -d postgres"
     command = _exec_command(container, inner, interactive=True)
     return subprocess.Popen(command, stdin=subprocess.PIPE)
 

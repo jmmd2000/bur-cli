@@ -68,7 +68,7 @@ def test_restore_globals_targets_postgres_db(popen_calls: list[_FakePopen]) -> N
     dockerpg.restore_globals("app-db", "appuser")
     call = popen_calls[-1]
     assert call.args[:3] == ["docker", "exec", "-i"]
-    assert call.args[-1] == 'PGPASSWORD="${POSTGRES_PASSWORD:-}" psql -U appuser -d postgres'
+    assert call.args[-1] == 'PGPASSWORD="${POSTGRES_PASSWORD:-}" psql -q -U appuser -d postgres'
     assert call.kwargs["stdin"] is subprocess.PIPE
 
 

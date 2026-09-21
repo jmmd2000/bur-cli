@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
 from bur import runner
-from bur.config import ConfigError, load_config
+from bur.config import Config, ConfigError, load_config
+from bur.container import ContainerError
 from bur.crypto import CryptoError
 from bur.dockerpg import DockerCommandError
-from bur.runner import BackupError
+from bur.naming import InvalidBackupName, parse_timestamp
+from bur.runner import BackupError, DrillError
+from bur.storage import BackupNotFound
 
 app = typer.Typer()
 
@@ -19,6 +23,15 @@ app = typer.Typer()
 @app.callback()
 def bur_callback() -> None:
     """Back up and restore dockerised Postgres databases"""
+
+
+def _load_config_or_exit(config_path: Path | None) -> Config:
+    """Load the config, reporting and exiting on a config error"""
+    try:
+        return load_config(config_path)
+    except ConfigError as error:
+        typer.secho(f"config error: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
 
 
 @app.command()
@@ -41,11 +54,7 @@ def backup(
     ] = False,
 ) -> None:
     """Back up one database to encrypted local files"""
-    try:
-        config = load_config(config_path)
-    except ConfigError as error:
-        typer.secho(f"config error: {error}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1) from error
+    config = _load_config_or_exit(config_path)
 
     try:
         result = runner.backup_database(
@@ -57,3 +66,59 @@ def backup(
 
     verb = "would write" if result.dry_run else "wrote"
     typer.echo(f"{verb} {result.dump_name} and {result.globals_name}")
+
+
+@app.command()
+def restore(
+    app_name: Annotated[
+        str, typer.Argument(metavar="APP", help="Application whose backup to restore")
+    ],
+    identity: Annotated[Path, typer.Option("--identity", help="Path to the age identity file")],
+    major: Annotated[
+        str, typer.Option("--major", help="Postgres major version for the throwaway container")
+    ],
+    drill: Annotated[
+        bool, typer.Option("--drill", help="Restore into a throwaway container and check it")
+    ] = False,
+    db: Annotated[
+        str | None, typer.Option(help="Database to restore into, defaults to the app name")
+    ] = None,
+    date: Annotated[
+        str | None, typer.Option("--date", help="Backup to restore, defaults to the newest")
+    ] = None,
+    config_path: Annotated[
+        Path | None, typer.Option("--config", help="Path to bur.toml, defaults to $BUR_CONFIG")
+    ] = None,
+) -> None:
+    """Restore a stored backup"""
+    if not drill:
+        typer.secho("only --drill rn", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    config = _load_config_or_exit(config_path)
+
+    timestamp: datetime | None = None
+    if date is not None:
+        try:
+            timestamp = parse_timestamp(date)
+        except InvalidBackupName as error:
+            typer.secho(f"bad --date: {error}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=1) from error
+
+    try:
+        result = runner.restore_drill(
+            config, app_name, str(identity), major, db or app_name, timestamp=timestamp
+        )
+    except (
+        BackupNotFound,
+        ContainerError,
+        CryptoError,
+        DockerCommandError,
+        DrillError,
+    ) as error:
+        typer.secho(f"drill failed: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    typer.echo(f"restored {result.dump_name} into a throwaway postgres:{major}")
+    for table, rows in result.row_counts.items():
+        typer.echo(f"  {table}: {rows} rows")

@@ -18,6 +18,7 @@ _KNOWN_KEYS = frozenset(
         "backup_root",
         "retention_keep",
         "age_recipients",
+        "exclude",
         "r2_remote",
         "r2_bucket",
         "overdue_hours",
@@ -41,6 +42,7 @@ class Config:
     r2_bucket: str = ""
     overdue_hours: float = _DEFAULT_OVERDUE_HOURS
     postgres_image_match: str = _DEFAULT_POSTGRES_IMAGE_MATCH
+    exclude: tuple[str, ...] = ()
 
 
 def load_config(path: Path | str | None = None) -> Config:
@@ -90,6 +92,7 @@ def _build_config(raw: dict[str, object]) -> Config:
         postgres_image_match=_optional_str(
             raw, "postgres_image_match", _DEFAULT_POSTGRES_IMAGE_MATCH
         ),
+        exclude=tuple(_optional_str_list(raw, "exclude", [])),
     )
 
 
@@ -105,6 +108,15 @@ def _require_str(raw: dict[str, object], key: str) -> str:
 def _require_str_list(raw: dict[str, object], key: str) -> list[str]:
     if key not in raw:
         raise ConfigError(f"missing required field: {key}")
+    value = raw[key]
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise ConfigError(f"{key} must be a list of non-empty strings")
+    return value
+
+
+def _optional_str_list(raw: dict[str, object], key: str, default: list[str]) -> list[str]:
+    if key not in raw:
+        return default
     value = raw[key]
     if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
         raise ConfigError(f"{key} must be a list of non-empty strings")

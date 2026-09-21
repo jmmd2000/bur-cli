@@ -13,6 +13,7 @@ _FULL = """
 backup_root = "/srv/backups"
 retention_keep = 5
 age_recipients = ["age1abc", "age1def"]
+exclude = ["giftring", "scratch"]
 r2_remote = "r2"
 r2_bucket = "burr"
 overdue_hours = 12
@@ -99,3 +100,20 @@ def test_unknown_field_is_rejected(tmp_path: Path) -> None:
     body = 'backup_root = "/backups"\nage_recipients = ["age1abc"]\nbackup_roott = "/x"'
     with pytest.raises(ConfigError, match="unknown"):
         load_config(_write(tmp_path, body))
+
+
+def test_exclude_defaults_to_empty(tmp_path: Path) -> None:
+    config = load_config(_write(tmp_path, _MINIMAL))
+    assert config.exclude == ()
+
+
+def test_exclude_is_read_from_the_config(tmp_path: Path) -> None:
+    config = load_config(_write(tmp_path, _FULL))
+    assert config.exclude == ("giftring", "scratch")
+
+
+def test_exclude_must_be_a_list_of_names(tmp_path: Path) -> None:
+    body = '\nbackup_root = "/backups"\nage_recipients = ["age1abc"]\nexclude = "giftring"\n'
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(_write(tmp_path, body))
+    assert "exclude" in str(excinfo.value)

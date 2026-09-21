@@ -1,12 +1,15 @@
-"""Back up one database to encrypted local files
+"""Back up one database to encrypted local files, and carry out a restore drill
 
-Names the two artefacts for a run, checks there's room for the dump, then
-streams the dump and the cluster globals through age into atomic writes under
-``<backup_root>/<app>/``.
+Backup names the two artefacts for a run, checks there's room for the dump,
+then streams the dump and the cluster globals through age into atomic writes
+under ``<backup_root>/<app>/``. The drill restores a stored pair into a
+throwaway container and counts what came back.
 """
 
 from __future__ import annotations
 
+import secrets
+import shutil
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -15,6 +18,7 @@ from pathlib import Path
 
 from bur import crypto, dockerpg, naming, storage
 from bur.config import Config
+from bur.container import throwaway
 
 
 class BackupError(RuntimeError):
@@ -30,6 +34,24 @@ class BackupResult:
     globals_name: str
     database_size: int
     dry_run: bool
+
+
+_DRILL_SUPERUSER = "drillsuper"
+
+
+class DrillError(RuntimeError):
+    """A restore drill did not produce a usable database"""
+
+
+@dataclass(frozen=True)
+class DrillResult:
+    """What a restore drill restored"""
+
+    app: str
+    dump_name: str
+    globals_name: str
+    timestamp: datetime
+    row_counts: dict[str, int]
 
 
 def backup_database(
@@ -89,18 +111,62 @@ def backup_database(
     return BackupResult(app, dump_name, globals_name, size, dry_run=False)
 
 
+def restore_drill(
+    config: Config,
+    app: str,
+    identity: str,
+    major: str,
+    db: str,
+    *,
+    timestamp: datetime | None = None,
+) -> DrillResult:
+    """Restore a stored backup into a throwaway container and verify
+
+    Applies the cluster globals, then the dump, then counts the rows in every
+    restored table.
+
+    :param config: Loaded configuration (backup root)
+    :param app: Application whose backup to drill
+    :param identity: Path to the age identity file
+    :param major: Postgres major version for the throwaway container
+    :param db: Database name to restore into
+    :param timestamp: Backup to drill, defaults to the newest
+    :returns: What the drill restored
+    :raises DrillError: If no tables were restored, or every table is empty
+    """
+    pair = storage.find_backup_pair(config.backup_root, app, timestamp)
+    password = secrets.token_hex(16)
+
+    with throwaway(f"postgres:{major}", _DRILL_SUPERUSER, password, db) as name:
+        _restore_artefact(
+            config.backup_root,
+            app,
+            pair.globals_name,
+            identity,
+            dockerpg.restore_globals(name, _DRILL_SUPERUSER),
+        )
+        _restore_artefact(
+            config.backup_root,
+            app,
+            pair.dump_name,
+            identity,
+            dockerpg.restore(name, db, _DRILL_SUPERUSER),
+        )
+        row_counts = _count_every_table(name, db, _DRILL_SUPERUSER)
+
+    if not row_counts:
+        raise DrillError(f"{app} restored no tables")
+    if not any(row_counts.values()):
+        raise DrillError(f"{app} restored {len(row_counts)} tables, all of them empty")
+
+    return DrillResult(app, pair.dump_name, pair.globals_name, pair.timestamp, row_counts)
+
+
 def _read_database_size(container: str, db: str, user: str) -> int:
     """Read the ``pg_database_size`` for the given database"""
-    process = dockerpg.database_size(container, db, user)
-    stream = process.stdout
-    if stream is None:
-        raise BackupError("database size query produced no output")
-    raw = stream.read()
-    stream.close()
-    process.wait()
-    dockerpg.check(process)
+    raw = _read_output(dockerpg.database_size(container, db, user))
     try:
-        return int(raw.strip())
+        return int(raw)
     except ValueError as error:
         raise BackupError(f"could not read database size, got {raw!r}") from error
 
@@ -115,3 +181,60 @@ def _encrypt_to_file(
     """Stream a dump process thru age into one atomic backup file"""
     with storage.atomic_write(root, app, name) as out:
         crypto.encrypt(source, recipients, out)
+
+
+def _restore_artefact(
+    root: Path,
+    app: str,
+    name: str,
+    identity: str,
+    target: subprocess.Popen[bytes],
+) -> None:
+    """Decrypt one stored artefact into a running restore process"""
+    with storage.open_backup(root, app, name) as ciphertext:
+        source = crypto.decrypt(ciphertext, identity)
+        _pipe(source, target)
+
+
+def _pipe(source: subprocess.Popen[bytes], target: subprocess.Popen[bytes]) -> None:
+    """Copy a decrypt's output into a restore's input, checking both exit codes"""
+    if source.stdout is None or target.stdin is None:
+        raise DrillError("restore pipeline is missing a pipe")
+
+    try:
+        shutil.copyfileobj(source.stdout, target.stdin)
+    except BrokenPipeError:
+        pass
+
+    target.stdin.close()
+    source.stdout.close()
+    target.wait()
+    source.wait()
+
+    if source.returncode != 0:
+        raise DrillError(f"decrypt failed with exit code {source.returncode}")
+    dockerpg.check(target)
+
+
+def _count_every_table(container: str, db: str, user: str) -> dict[str, int]:
+    """Count the rows in each of a db's user tables"""
+    listing = _read_output(dockerpg.table_names(container, db, user))
+    tables = [line.strip() for line in listing.splitlines() if line.strip()]
+
+    row_counts: dict[str, int] = {}
+    for table in tables:
+        counted = _read_output(dockerpg.count_rows(container, db, user, table))
+        row_counts[table] = int(counted)
+    return row_counts
+
+
+def _read_output(process: subprocess.Popen[bytes]) -> str:
+    """Read a finished query's stdout, error if it exited non-zero"""
+    stream = process.stdout
+    if stream is None:
+        raise RuntimeError("query process has no stdout")
+    output = stream.read().decode()
+    stream.close()
+    process.wait()
+    dockerpg.check(process)
+    return output.strip()

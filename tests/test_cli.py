@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -10,7 +10,7 @@ from typer.testing import CliRunner
 from bur import cli, runner
 from bur.cli import app
 from bur.config import Config
-from bur.runner import BackupError, BackupResult
+from bur.runner import BackupError, BackupResult, DrillError, DrillResult
 
 _cli = CliRunner()
 
@@ -129,5 +129,107 @@ def test_a_failed_backup_exits_non_zero(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(runner, "backup_database", fail)
 
     outcome = _cli.invoke(app, ["backup", "--only", "giftring"])
+
+    assert outcome.exit_code == 1
+
+
+def _drill_result() -> DrillResult:
+    return DrillResult(
+        app="giftring",
+        dump_name="giftring-20260603T174800Z.dump.age",
+        globals_name="giftring-20260603T174800Z.globals.sql.age",
+        timestamp=datetime(2026, 6, 3, 17, 48, tzinfo=UTC),
+        row_counts={"public.widgets": 100},
+    )
+
+
+def _fake_drill(calls: list[dict[str, object]], result: DrillResult) -> Callable[..., DrillResult]:
+    def fake(
+        config: Config,
+        app_name: str,
+        identity: str,
+        major: str,
+        db: str,
+        *,
+        timestamp: datetime | None = None,
+    ) -> DrillResult:
+        calls.append(
+            {
+                "app": app_name,
+                "identity": identity,
+                "major": major,
+                "db": db,
+                "timestamp": timestamp,
+            }
+        )
+        return result
+
+    return fake
+
+
+def _restore_args(*extra: str) -> list[str]:
+    return ["restore", "giftring", "--identity", "key.txt", "--major", "16", *extra]
+
+
+def test_restore_requires_drill(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+
+    outcome = _cli.invoke(app, _restore_args())
+
+    assert outcome.exit_code == 1
+
+
+def test_restore_drills_the_named_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(runner, "restore_drill", _fake_drill(calls, _drill_result()))
+
+    outcome = _cli.invoke(app, _restore_args("--drill"))
+
+    assert outcome.exit_code == 0
+    assert calls[0]["app"] == "giftring"
+    assert calls[0]["db"] == "giftring"
+    assert calls[0]["major"] == "16"
+    assert calls[0]["timestamp"] is None
+
+
+def test_restore_accepts_a_date(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(runner, "restore_drill", _fake_drill(calls, _drill_result()))
+
+    outcome = _cli.invoke(app, _restore_args("--drill", "--date", "20260603T174800Z"))
+
+    assert outcome.exit_code == 0
+    assert calls[0]["timestamp"] == datetime(2026, 6, 3, 17, 48, tzinfo=UTC)
+
+
+def test_restore_rejects_a_bad_date(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+
+    outcome = _cli.invoke(app, _restore_args("--drill", "--date", "yesterday"))
+
+    assert outcome.exit_code == 1
+
+
+def test_restore_reports_the_row_counts(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    monkeypatch.setattr(runner, "restore_drill", _fake_drill([], _drill_result()))
+
+    outcome = _cli.invoke(app, _restore_args("--drill"))
+
+    assert "public.widgets" in outcome.output
+    assert "100" in outcome.output
+
+
+def test_a_failed_drill_exits_non_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+
+    def fail(*args: object, **kwargs: object) -> DrillResult:
+        raise DrillError("giftring restored no tables")
+
+    monkeypatch.setattr(runner, "restore_drill", fail)
+
+    outcome = _cli.invoke(app, _restore_args("--drill"))
 
     assert outcome.exit_code == 1

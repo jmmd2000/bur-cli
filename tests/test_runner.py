@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -8,7 +10,9 @@ import pytest
 
 from bur import crypto, dockerpg, runner, storage
 from bur.config import Config
-from bur.runner import BackupError
+from bur.dockerpg import DockerCommandError
+from bur.naming import ArtefactKind, build
+from bur.runner import BackupError, DrillError
 
 
 def _generate_keypair(identity_path: Path) -> str:
@@ -139,3 +143,144 @@ def test_truncated_dump_fails_and_leaves_no_file(
     app_dir = root / "app"
     leftovers = list(app_dir.iterdir()) if app_dir.exists() else []
     assert leftovers == []
+
+
+def _sink() -> subprocess.Popen[bytes]:
+    """A process that swallows stdin and exits 0, standing in for a restore."""
+    return subprocess.Popen(["sh", "-c", "cat > /dev/null"], stdin=subprocess.PIPE)
+
+
+def _store_pair(root: Path, app: str, when: datetime, recipient: str, tmp_path: Path) -> None:
+    """Write a real encrypted dump and globals pair for an app."""
+    payloads: tuple[tuple[ArtefactKind, bytes], ...] = (
+        ("dump", b"pretend custom format dump"),
+        ("globals", b"-- roles and grants"),
+    )
+    for kind, payload in payloads:
+        with storage.atomic_write(root, app, build(app, when, kind)) as out:
+            crypto.encrypt(_emitting(payload, tmp_path, kind), [recipient], out)
+
+
+def _patch_drill(
+    monkeypatch: pytest.MonkeyPatch, events: list[str], tables: list[str], rows: int
+) -> None:
+    """Fake the container and the restore commands, recording what runs in order."""
+
+    @contextmanager
+    def fake_throwaway(image: str, superuser: str, password: str, db: str) -> Iterator[str]:
+        events.append(f"start {image}")
+        try:
+            yield "drill-container"
+        finally:
+            events.append("remove")
+
+    def fake_restore_globals(container: str, user: str) -> subprocess.Popen[bytes]:
+        events.append("globals")
+        return _sink()
+
+    def fake_restore(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
+        events.append("dump")
+        return _sink()
+
+    def fake_table_names(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
+        listing = "".join(f"{table}\\n" for table in tables)
+        return _shell(f"printf '{listing}'")
+
+    def fake_count_rows(container: str, db: str, user: str, table: str) -> subprocess.Popen[bytes]:
+        return _shell(f"echo {rows}")
+
+    monkeypatch.setattr(runner, "throwaway", fake_throwaway)
+    monkeypatch.setattr(dockerpg, "restore_globals", fake_restore_globals)
+    monkeypatch.setattr(dockerpg, "restore", fake_restore)
+    monkeypatch.setattr(dockerpg, "table_names", fake_table_names)
+    monkeypatch.setattr(dockerpg, "count_rows", fake_count_rows)
+
+
+def test_drill_restores_globals_then_the_dump(
+    keypair: tuple[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recipient, identity = keypair
+    root = tmp_path / "backups"
+    when = datetime(2026, 6, 3, 17, 48, tzinfo=UTC)
+    _store_pair(root, "giftring", when, recipient, tmp_path)
+
+    events: list[str] = []
+    _patch_drill(monkeypatch, events, ["public.widgets"], 100)
+
+    result = runner.restore_drill(
+        _config(root, recipient), "giftring", str(identity), "16", "giftring"
+    )
+
+    assert events == ["start postgres:16", "globals", "dump", "remove"]
+    assert result.row_counts == {"public.widgets": 100}
+    assert result.timestamp == when
+
+
+def test_drill_drills_a_specific_backup(
+    keypair: tuple[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recipient, identity = keypair
+    root = tmp_path / "backups"
+    older = datetime(2026, 1, 1, tzinfo=UTC)
+    newer = datetime(2026, 2, 1, tzinfo=UTC)
+    _store_pair(root, "giftring", older, recipient, tmp_path)
+    _store_pair(root, "giftring", newer, recipient, tmp_path)
+
+    _patch_drill(monkeypatch, [], ["public.widgets"], 5)
+
+    result = runner.restore_drill(
+        _config(root, recipient), "giftring", str(identity), "16", "giftring", timestamp=older
+    )
+
+    assert result.timestamp == older
+
+
+def test_drill_fails_when_no_tables_were_restored(
+    keypair: tuple[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recipient, identity = keypair
+    root = tmp_path / "backups"
+    _store_pair(root, "giftring", datetime(2026, 6, 3, tzinfo=UTC), recipient, tmp_path)
+
+    events: list[str] = []
+    _patch_drill(monkeypatch, events, [], 0)
+
+    with pytest.raises(DrillError, match="no tables"):
+        runner.restore_drill(_config(root, recipient), "giftring", str(identity), "16", "giftring")
+    assert events[-1] == "remove"
+
+
+def test_drill_fails_when_every_table_is_empty(
+    keypair: tuple[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recipient, identity = keypair
+    root = tmp_path / "backups"
+    _store_pair(root, "giftring", datetime(2026, 6, 3, tzinfo=UTC), recipient, tmp_path)
+
+    events: list[str] = []
+    _patch_drill(monkeypatch, events, ["public.widgets"], 0)
+
+    with pytest.raises(DrillError, match="empty"):
+        runner.restore_drill(_config(root, recipient), "giftring", str(identity), "16", "giftring")
+    assert events[-1] == "remove"
+
+
+def test_drill_removes_the_container_when_the_restore_fails(
+    keypair: tuple[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recipient, identity = keypair
+    root = tmp_path / "backups"
+    _store_pair(root, "giftring", datetime(2026, 6, 3, tzinfo=UTC), recipient, tmp_path)
+
+    events: list[str] = []
+    _patch_drill(monkeypatch, events, ["public.widgets"], 100)
+
+    def failing_restore(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
+        events.append("dump")
+        return subprocess.Popen(["sh", "-c", "cat > /dev/null; exit 1"], stdin=subprocess.PIPE)
+
+    monkeypatch.setattr(dockerpg, "restore", failing_restore)
+
+    with pytest.raises(DockerCommandError):
+        runner.restore_drill(_config(root, recipient), "giftring", str(identity), "16", "giftring")
+    assert events[-1] == "remove"

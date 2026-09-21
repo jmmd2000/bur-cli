@@ -14,6 +14,10 @@ import shlex
 import subprocess
 
 _PGPASSWORD_PREFIX = 'PGPASSWORD="${POSTGRES_PASSWORD:-}"'
+_TABLE_NAMES_SQL = (
+    "SELECT quote_ident(schemaname) || '.' || quote_ident(relname) "
+    "FROM pg_stat_user_tables ORDER BY 1"
+)
 
 
 class DockerCommandError(RuntimeError):
@@ -70,6 +74,38 @@ def database_size(container: str, db: str, user: str) -> subprocess.Popen[bytes]
     return subprocess.Popen(command, stdout=subprocess.PIPE)
 
 
+def table_names(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
+    """List a database's user tables, one per line, streamed to stdout
+
+    Names come back quoted, ready to use in a follow-up query.
+
+    :param container: Container running the database
+    :param db: Database to list tables from
+    :param user: Role to connect as
+    :returns: The running process, one table per line on ``stdout``
+    """
+    inner = f"psql -tAc {shlex.quote(_TABLE_NAMES_SQL)} -U {shlex.quote(user)} -d {shlex.quote(db)}"
+    command = _exec_command(container, inner)
+    return subprocess.Popen(command, stdout=subprocess.PIPE)
+
+
+def count_rows(container: str, db: str, user: str, table: str) -> subprocess.Popen[bytes]:
+    """Count the rows in one table, streamed to stdout
+
+    :param container: Container running the database
+    :param db: Database the table lives in
+    :param user: Role to connect as
+    :param table: Table to count, as returned by :func:`table_names`
+    :returns: The running process, the row count on ``stdout``
+    """
+    inner = (
+        f"psql -tAc {shlex.quote(f'SELECT count(*) FROM {table}')} "
+        f"-U {shlex.quote(user)} -d {shlex.quote(db)}"
+    )
+    command = _exec_command(container, inner)
+    return subprocess.Popen(command, stdout=subprocess.PIPE)
+
+
 def restore(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
     """``pg_restore`` a custom format dump from stdin
 
@@ -95,7 +131,7 @@ def restore_globals(container: str, user: str) -> subprocess.Popen[bytes]:
     Talks to the ``postgres`` database since the target may not exist yet, and
     skips ``ON_ERROR_STOP`` so re-running is fine.
     """
-    inner = f"psql -U {shlex.quote(user)} -d postgres"
+    inner = f"psql -q -U {shlex.quote(user)} -d postgres"
     command = _exec_command(container, inner, interactive=True)
     return subprocess.Popen(command, stdin=subprocess.PIPE)
 

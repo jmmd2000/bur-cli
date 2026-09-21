@@ -68,7 +68,7 @@ def test_restore_globals_targets_postgres_db(popen_calls: list[_FakePopen]) -> N
     dockerpg.restore_globals("app-db", "appuser")
     call = popen_calls[-1]
     assert call.args[:3] == ["docker", "exec", "-i"]
-    assert call.args[-1] == 'PGPASSWORD="${POSTGRES_PASSWORD:-}" psql -U appuser -d postgres'
+    assert call.args[-1] == 'PGPASSWORD="${POSTGRES_PASSWORD:-}" psql -q -U appuser -d postgres'
     assert call.kwargs["stdin"] is subprocess.PIPE
 
 
@@ -114,5 +114,31 @@ def test_database_size_queries_pg_database_size(popen_calls: list[_FakePopen]) -
 
 def test_database_size_shell_quotes_user_and_db(popen_calls: list[_FakePopen]) -> None:
     dockerpg.database_size("app-db", "a; rm -rf /", "ro le")
+    inner = popen_calls[-1].args[-1]
+    assert inner.endswith("-U 'ro le' -d 'a; rm -rf /'")
+
+
+def test_table_names_lists_the_user_tables(popen_calls: list[_FakePopen]) -> None:
+    dockerpg.table_names("app-db", "app", "appuser")
+    call = popen_calls[-1]
+    inner = call.args[-1]
+    assert "FROM pg_stat_user_tables ORDER BY 1" in inner
+    assert "quote_ident" in inner
+    assert inner.endswith("-U appuser -d app")
+    assert call.kwargs["stdout"] is subprocess.PIPE
+
+
+def test_count_rows_counts_one_table(popen_calls: list[_FakePopen]) -> None:
+    dockerpg.count_rows("app-db", "app", "appuser", "public.widgets")
+    call = popen_calls[-1]
+    assert call.args[-1] == (
+        'PGPASSWORD="${POSTGRES_PASSWORD:-}" '
+        "psql -tAc 'SELECT count(*) FROM public.widgets' -U appuser -d app"
+    )
+    assert call.kwargs["stdout"] is subprocess.PIPE
+
+
+def test_count_rows_shell_quotes_user_and_db(popen_calls: list[_FakePopen]) -> None:
+    dockerpg.count_rows("app-db", "a; rm -rf /", "ro le", "public.widgets")
     inner = popen_calls[-1].args[-1]
     assert inner.endswith("-U 'ro le' -d 'a; rm -rf /'")

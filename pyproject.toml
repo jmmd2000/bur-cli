@@ -1,6 +1,6 @@
 [project]
 name = "bur"
-version = "0.5.0"
+version = "0.6.0"
 description = "Back up and restore dockerised Postgres databases, encrypted and pushed to Cloudflare R2"
 readme = "README.md"
 authors = [
@@ -44,3 +44,4 @@ files = ["src", "tests"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["integration: needs docker and the age binary"]

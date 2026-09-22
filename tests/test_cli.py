@@ -7,9 +7,10 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from bur import cli, runner
+from bur import cli, discovery, runner
 from bur.cli import app
 from bur.config import Config
+from bur.discovery import ContainerInfo, DBTarget, Discovered, DiscoveryError, LabelProblem
 from bur.runner import BackupError, BackupResult, DrillError, DrillResult
 
 _cli = CliRunner()
@@ -233,3 +234,150 @@ def test_a_failed_drill_exits_non_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     outcome = _cli.invoke(app, _restore_args("--drill"))
 
     assert outcome.exit_code == 1
+
+
+def _target(app_name: str = "giftring", excluded: bool = False) -> DBTarget:
+    return DBTarget(
+        container=f"{app_name}-db-1",
+        app=app_name,
+        database="gift",
+        user="gift_owner",
+        retention_keep=3,
+        schedule="weekly",
+        excluded=excluded,
+    )
+
+
+def _patch_discover(monkeypatch: pytest.MonkeyPatch, discovered: Discovered) -> None:
+    def fake_discover(config: Config) -> Discovered:
+        return discovered
+
+    monkeypatch.setattr(discovery, "discover", fake_discover)
+
+
+def test_dbs_lists_each_target_with_its_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    _patch_discover(monkeypatch, Discovered([_target()], []))
+
+    outcome = _cli.invoke(app, ["dbs"])
+
+    assert outcome.exit_code == 0
+    assert "giftring" in outcome.output
+    assert "giftring-db-1" in outcome.output
+    assert "gift_owner" in outcome.output
+    assert "weekly" in outcome.output
+
+
+def test_dbs_marks_an_excluded_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    _patch_discover(monkeypatch, Discovered([_target(excluded=True)], []))
+
+    outcome = _cli.invoke(app, ["dbs"])
+
+    assert "(excluded)" in outcome.output
+
+
+def test_dbs_says_when_nothing_opted_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    _patch_discover(monkeypatch, Discovered([], []))
+
+    outcome = _cli.invoke(app, ["dbs"])
+
+    assert outcome.exit_code == 0
+    assert "no databases" in outcome.output
+
+
+def test_dbs_reports_problems_without_failing(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    _patch_discover(
+        monkeypatch, Discovered([_target()], [LabelProblem("bad-db-1", "bur.app must match")])
+    )
+
+    outcome = _cli.invoke(app, ["dbs"])
+
+    assert outcome.exit_code == 0
+
+
+def test_dbs_exits_non_zero_when_docker_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+
+    def fail(config: Config) -> Discovered:
+        raise DiscoveryError("cannot connect to the docker daemon")
+
+    monkeypatch.setattr(discovery, "discover", fail)
+
+    outcome = _cli.invoke(app, ["dbs"])
+
+    assert outcome.exit_code == 1
+
+
+def _patch_audit(monkeypatch: pytest.MonkeyPatch, containers: list[ContainerInfo]) -> None:
+    def fake_audit(config: Config) -> list[ContainerInfo]:
+        return containers
+
+    monkeypatch.setattr(discovery, "audit", fake_audit)
+
+
+def _patch_probe(
+    monkeypatch: pytest.MonkeyPatch, failure: str | None, probed: list[str] | None = None
+) -> None:
+    def fake_probe_auth(target: DBTarget) -> str | None:
+        if probed is not None:
+            probed.append(target.app)
+        return failure
+
+    monkeypatch.setattr(discovery, "probe_auth", fake_probe_auth)
+
+
+def test_check_passes_when_everything_is_usable(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    _patch_discover(monkeypatch, Discovered([_target()], []))
+    _patch_audit(monkeypatch, [])
+    _patch_probe(monkeypatch, None)
+
+    outcome = _cli.invoke(app, ["check"])
+
+    assert outcome.exit_code == 0
+    assert "giftring: ok" in outcome.output
+
+
+def test_check_fails_on_a_label_problem(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    _patch_discover(monkeypatch, Discovered([], [LabelProblem("bad-db-1", "bur.app must match")]))
+    _patch_audit(monkeypatch, [])
+    _patch_probe(monkeypatch, None)
+
+    assert _cli.invoke(app, ["check"]).exit_code == 1
+
+
+def test_check_fails_when_a_database_cannot_be_reached(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    _patch_discover(monkeypatch, Discovered([_target()], []))
+    _patch_audit(monkeypatch, [])
+    _patch_probe(monkeypatch, 'role "gift_owner" does not exist')
+
+    assert _cli.invoke(app, ["check"]).exit_code == 1
+
+
+def test_check_fails_on_an_unlabelled_postgres_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_config(monkeypatch)
+    _patch_discover(monkeypatch, Discovered([], []))
+    _patch_audit(monkeypatch, [ContainerInfo("forgotten-db-1", "postgres:16", {})])
+    _patch_probe(monkeypatch, None)
+
+    assert _cli.invoke(app, ["check"]).exit_code == 1
+
+
+def test_check_does_not_probe_an_excluded_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    _patch_discover(monkeypatch, Discovered([_target(excluded=True)], []))
+    _patch_audit(monkeypatch, [])
+    probed: list[str] = []
+    _patch_probe(monkeypatch, None, probed)
+
+    outcome = _cli.invoke(app, ["check"])
+
+    assert outcome.exit_code == 0
+    assert probed == []

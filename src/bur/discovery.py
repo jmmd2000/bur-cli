@@ -11,6 +11,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 
+from bur import dockerpg
 from bur.config import Config
 
 
@@ -50,6 +51,22 @@ class DBTarget:
     excluded: bool
 
 
+@dataclass(frozen=True)
+class LabelProblem:
+    """A container whose labels could not be resolved"""
+
+    container: str
+    problem: str
+
+
+@dataclass(frozen=True)
+class Discovered:
+    """The resolved targets, and the containers that could not be resolved"""
+
+    targets: list[DBTarget]
+    problems: list[LabelProblem]
+
+
 def inspect_running(label_filter: str | None = None) -> list[ContainerInfo]:
     """Inspect the running containers, optionally only those with a label
 
@@ -77,29 +94,59 @@ def inspect_running(label_filter: str | None = None) -> list[ContainerInfo]:
     return [_read_container(entry) for entry in entries]
 
 
-def discover(config: Config) -> list[DBTarget]:
-    """Find every database that opted into backups
+def discover(config: Config) -> Discovered:
+    """Find every database that opted in to backups
 
-    :param config: Loaded config
-    :returns: One target per labelled container
-    :raises InvalidLabel: If any containers labels are not usable
+    :param config: Loaded configuration, for the fallback retention and exclusions
+    :returns: The resolved targets and any containers that could not be resolved
+    :raises DiscoveryError: If docker could not be listed or inspected
     """
-    containers = inspect_running(f"{_ENABLE_LABEL}=true")
-    return [resolve(container, config) for container in containers]
+    targets: list[DBTarget] = []
+    problems: list[LabelProblem] = []
+
+    for container in inspect_running(f"{_ENABLE_LABEL}=true"):
+        try:
+            targets.append(resolve(container, config))
+        except InvalidLabel as error:
+            problems.append(LabelProblem(container.name, str(error)))
+
+    return Discovered(targets, problems)
 
 
 def audit(config: Config) -> list[ContainerInfo]:
-    """Find running postgres containers that never opted in
+    """Find running Postgres containers that never opted in
 
-    :param config: Loaded config
+    Containers named in the config's ``exclude`` list are skipped.
+
+    :param config: Loaded configuration, for ``postgres_image_match`` and ``exclude``
     :returns: Containers whose image matches but which carry no ``bur.enable`` label
     :raises DiscoveryError: If docker could not be listed or inspected
     """
     return [
-        container
-        for container in inspect_running()
-        if config.postgres_image_match in container.image and _ENABLE_LABEL not in container.labels
+        container for container in inspect_running() if _is_unlabelled_database(container, config)
     ]
+
+
+def _is_unlabelled_database(container: ContainerInfo, config: Config) -> bool:
+    """Whether a container looks like a database that never opted in"""
+    if config.postgres_image_match not in container.image:
+        return False
+    if _ENABLE_LABEL in container.labels:
+        return False
+    return container.name not in config.exclude
+
+
+def probe_auth(target: DBTarget) -> str | None:
+    """Check that bur can connect to a target
+
+    :param target: A resolved database target
+    :returns: None if the connection works, otherwise why it didn't
+    """
+    process = dockerpg.probe(target.container, target.database, target.user)
+    _, errors = process.communicate()
+    if process.returncode == 0:
+        return None
+    return errors.decode().strip() or f"exit code {process.returncode}"
 
 
 def resolve(container: ContainerInfo, config: Config) -> DBTarget:

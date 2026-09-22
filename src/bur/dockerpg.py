@@ -74,6 +74,19 @@ def database_size(container: str, db: str, user: str) -> subprocess.Popen[bytes]
     return subprocess.Popen(command, stdout=subprocess.PIPE)
 
 
+def probe(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
+    """Run a trivial query to confirm the database accepts a connection
+
+    :param container: Container running the database
+    :param db: Database to connect to
+    :param user: Role to connect as
+    :returns: The running process
+    """
+    inner = f"psql -tAc 'SELECT 1' -U {shlex.quote(user)} -d {shlex.quote(db)}"
+    command = _exec_command(container, inner)
+    return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
 def table_names(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
     """List a database's user tables, one per line, streamed to stdout
 

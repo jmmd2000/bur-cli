@@ -142,3 +142,19 @@ def test_count_rows_shell_quotes_user_and_db(popen_calls: list[_FakePopen]) -> N
     dockerpg.count_rows("app-db", "a; rm -rf /", "ro le", "public.widgets")
     inner = popen_calls[-1].args[-1]
     assert inner.endswith("-U 'ro le' -d 'a; rm -rf /'")
+
+
+def test_probe_runs_a_trivial_query(popen_calls: list[_FakePopen]) -> None:
+    dockerpg.probe("app-db", "app", "appuser")
+    call = popen_calls[-1]
+    assert call.args[-1] == (
+        "PGPASSWORD=\"${POSTGRES_PASSWORD:-}\" psql -tAc 'SELECT 1' -U appuser -d app"
+    )
+    assert call.kwargs["stdout"] is subprocess.PIPE
+    assert call.kwargs["stderr"] is subprocess.PIPE
+
+
+def test_probe_shell_quotes_user_and_db(popen_calls: list[_FakePopen]) -> None:
+    dockerpg.probe("app-db", "a; rm -rf /", "ro le")
+    inner = popen_calls[-1].args[-1]
+    assert inner.endswith("-U 'ro le' -d 'a; rm -rf /'")

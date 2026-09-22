@@ -11,6 +11,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 
+from bur import dockerpg
 from bur.config import Config
 
 
@@ -124,6 +125,19 @@ def audit(config: Config) -> list[ContainerInfo]:
         for container in inspect_running()
         if config.postgres_image_match in container.image and _ENABLE_LABEL not in container.labels
     ]
+
+
+def probe_auth(target: DBTarget) -> str | None:
+    """Check that bur can connect to a target
+
+    :param target: A resolved database target
+    :returns: None if the connection works, otherwise why it didn't
+    """
+    process = dockerpg.probe(target.container, target.database, target.user)
+    _, errors = process.communicate()
+    if process.returncode == 0:
+        return None
+    return errors.decode().strip() or f"exit code {process.returncode}"
 
 
 def resolve(container: ContainerInfo, config: Config) -> DBTarget:

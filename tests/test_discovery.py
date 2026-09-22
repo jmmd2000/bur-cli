@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from bur import discovery
+from bur import discovery, dockerpg
 from bur.config import Config
-from bur.discovery import ContainerInfo, DiscoveryError, InvalidLabel
+from bur.discovery import ContainerInfo, DBTarget, DiscoveryError, InvalidLabel
 
 _INSPECT = json.dumps(
     [
@@ -263,3 +263,39 @@ def test_one_bad_container_does_not_stop_the_others(
     assert [target.app for target in discovered.targets] == ["giftring"]
     assert [problem.container for problem in discovered.problems] == ["bad-db-1"]
     assert "bur.app" in discovered.problems[0].problem
+
+
+def _target() -> DBTarget:
+    return DBTarget(
+        container="giftring-db-1",
+        app="giftring",
+        database="gift",
+        user="gift_owner",
+        retention_keep=10,
+        schedule="daily",
+        excluded=False,
+    )
+
+
+def test_probe_auth_passes_when_the_query_works(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_probe(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
+        return subprocess.Popen(
+            ["sh", "-c", "exit 0"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+
+    monkeypatch.setattr(dockerpg, "probe", fake_probe)
+
+    assert discovery.probe_auth(_target()) is None
+
+
+def test_probe_auth_reports_why_it_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_probe(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
+        return subprocess.Popen(
+            ["sh", "-c", "echo 'role \"gift_owner\" does not exist' >&2; exit 2"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    monkeypatch.setattr(dockerpg, "probe", fake_probe)
+
+    assert discovery.probe_auth(_target()) == 'role "gift_owner" does not exist'

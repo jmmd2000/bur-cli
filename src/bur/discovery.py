@@ -114,17 +114,26 @@ def discover(config: Config) -> Discovered:
 
 
 def audit(config: Config) -> list[ContainerInfo]:
-    """Find running postgres containers that never opted in
+    """Find running Postgres containers that never opted in
 
-    :param config: Loaded config
+    Containers named in the config's ``exclude`` list are skipped.
+
+    :param config: Loaded configuration, for ``postgres_image_match`` and ``exclude``
     :returns: Containers whose image matches but which carry no ``bur.enable`` label
     :raises DiscoveryError: If docker could not be listed or inspected
     """
     return [
-        container
-        for container in inspect_running()
-        if config.postgres_image_match in container.image and _ENABLE_LABEL not in container.labels
+        container for container in inspect_running() if _is_unlabelled_database(container, config)
     ]
+
+
+def _is_unlabelled_database(container: ContainerInfo, config: Config) -> bool:
+    """Whether a container looks like a database that never opted in"""
+    if config.postgres_image_match not in container.image:
+        return False
+    if _ENABLE_LABEL in container.labels:
+        return False
+    return container.name not in config.exclude
 
 
 def probe_auth(target: DBTarget) -> str | None:

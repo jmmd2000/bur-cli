@@ -299,3 +299,11 @@ def test_probe_auth_reports_why_it_failed(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(dockerpg, "probe", fake_probe)
 
     assert discovery.probe_auth(_target()) == 'role "gift_owner" does not exist'
+
+
+def test_audit_skips_a_container_named_in_exclude(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_docker(monkeypatch, [], "a\nb\nc\nd\n", _MIXED)
+
+    unlabelled = discovery.audit(_config(exclude=("forgotten-db-1",)))
+
+    assert unlabelled == []

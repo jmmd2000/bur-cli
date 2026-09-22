@@ -8,10 +8,11 @@ from typing import Annotated
 
 import typer
 
-from bur import runner
+from bur import discovery, runner
 from bur.config import Config, ConfigError, load_config
 from bur.container import ContainerError
 from bur.crypto import CryptoError
+from bur.discovery import DiscoveryError
 from bur.dockerpg import DockerCommandError
 from bur.naming import InvalidBackupName, parse_timestamp
 from bur.runner import BackupError, DrillError
@@ -122,3 +123,37 @@ def restore(
     typer.echo(f"restored {result.dump_name} into a throwaway postgres:{major}")
     for table, rows in result.row_counts.items():
         typer.echo(f"  {table}: {rows} rows")
+
+
+@app.command()
+def dbs(
+    config_path: Annotated[
+        Path | None, typer.Option("--config", help="Path to bur.toml, defaults to $BUR_CONFIG")
+    ] = None,
+) -> None:
+    """List the databases bur has discovered"""
+    config = _load_config_or_exit(config_path)
+
+    try:
+        discovered = discovery.discover(config)
+    except DiscoveryError as error:
+        typer.secho(f"discovery failed: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    if not discovered.targets and not discovered.problems:
+        typer.echo("no databases have opted in")
+        return
+
+    if discovered.targets:
+        typer.echo(
+            f"{'APP':<22} {'CONTAINER':<28} {'DATABASE':<18} {'USER':<16} {'KEEP':<6} SCHEDULE"
+        )
+    for target in discovered.targets:
+        marker = "  (excluded)" if target.excluded else ""
+        typer.echo(
+            f"{target.app:<22} {target.container:<28} {target.database:<18} "
+            f"{target.user:<16} {target.retention_keep:<6} {target.schedule}{marker}"
+        )
+
+    for problem in discovered.problems:
+        typer.secho(f"{problem.container}: {problem.problem}", fg=typer.colors.YELLOW, err=True)

@@ -157,3 +157,51 @@ def dbs(
 
     for problem in discovered.problems:
         typer.secho(f"{problem.container}: {problem.problem}", fg=typer.colors.YELLOW, err=True)
+
+
+@app.command()
+def check(
+    config_path: Annotated[
+        Path | None, typer.Option("--config", help="Path to bur.toml, defaults to $BUR_CONFIG")
+    ] = None,
+) -> None:
+    """Check every discovered database is usable"""
+    config = _load_config_or_exit(config_path)
+
+    try:
+        discovered = discovery.discover(config)
+        unlabelled = discovery.audit(config)
+    except DiscoveryError as error:
+        typer.secho(f"discovery failed: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    failures = 0
+
+    for problem in discovered.problems:
+        typer.secho(f"{problem.container}: {problem.problem}", fg=typer.colors.RED, err=True)
+        failures += 1
+
+    for target in discovered.targets:
+        if target.excluded:
+            typer.echo(f"{target.app}: excluded, not checked")
+            continue
+        failure = discovery.probe_auth(target)
+        if failure is None:
+            typer.echo(f"{target.app}: ok")
+        else:
+            typer.secho(f"{target.app}: cannot connect, {failure}", fg=typer.colors.RED, err=True)
+            failures += 1
+
+    for container in unlabelled:
+        typer.secho(
+            f"{container.name}: running {container.image} with no bur.enable label",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        failures += 1
+
+    if failures:
+        typer.secho(f"{failures} problem(s) found", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo("all good")

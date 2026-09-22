@@ -182,10 +182,11 @@ def test_discover_filters_on_the_enable_label(monkeypatch: pytest.MonkeyPatch) -
     calls: list[list[str]] = []
     _patch_docker(monkeypatch, calls, "abc123\n", _INSPECT)
 
-    targets = discovery.discover(_config())
+    discovered = discovery.discover(_config())
 
     assert calls[0] == ["docker", "ps", "-q", "--filter", "label=bur.enable=true"]
-    assert [target.app for target in targets] == ["giftring"]
+    assert [target.app for target in discovered.targets] == ["giftring"]
+    assert discovered.problems == []
 
 
 _MIXED = json.dumps(
@@ -236,3 +237,29 @@ def test_audit_uses_the_configured_image_match(monkeypatch: pytest.MonkeyPatch) 
     unlabelled = discovery.audit(_config(image_match="jenkins"))
 
     assert [container.name for container in unlabelled] == ["jenkins"]
+
+
+_ONE_BAD = json.dumps(
+    [
+        {
+            "Name": "/good-db-1",
+            "Config": {"Image": "postgres:16", "Labels": {"bur.app": "giftring"}},
+        },
+        {
+            "Name": "/bad-db-1",
+            "Config": {"Image": "postgres:16", "Labels": {"bur.app": "../../etc"}},
+        },
+    ]
+)
+
+
+def test_one_bad_container_does_not_stop_the_others(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_docker(monkeypatch, [], "a\nb\n", _ONE_BAD)
+
+    discovered = discovery.discover(_config())
+
+    assert [target.app for target in discovered.targets] == ["giftring"]
+    assert [problem.container for problem in discovered.problems] == ["bad-db-1"]
+    assert "bur.app" in discovered.problems[0].problem

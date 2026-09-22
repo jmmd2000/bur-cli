@@ -50,6 +50,22 @@ class DBTarget:
     excluded: bool
 
 
+@dataclass(frozen=True)
+class LabelProblem:
+    """A container whose labels could not be resolved"""
+
+    container: str
+    problem: str
+
+
+@dataclass(frozen=True)
+class Discovered:
+    """The resolved targets, and the containers that could not be resolved"""
+
+    targets: list[DBTarget]
+    problems: list[LabelProblem]
+
+
 def inspect_running(label_filter: str | None = None) -> list[ContainerInfo]:
     """Inspect the running containers, optionally only those with a label
 
@@ -77,15 +93,23 @@ def inspect_running(label_filter: str | None = None) -> list[ContainerInfo]:
     return [_read_container(entry) for entry in entries]
 
 
-def discover(config: Config) -> list[DBTarget]:
-    """Find every database that opted into backups
+def discover(config: Config) -> Discovered:
+    """Find every database that opted in to backups
 
-    :param config: Loaded config
-    :returns: One target per labelled container
-    :raises InvalidLabel: If any containers labels are not usable
+    :param config: Loaded configuration, for the fallback retention and exclusions
+    :returns: The resolved targets and any containers that could not be resolved
+    :raises DiscoveryError: If docker could not be listed or inspected
     """
-    containers = inspect_running(f"{_ENABLE_LABEL}=true")
-    return [resolve(container, config) for container in containers]
+    targets: list[DBTarget] = []
+    problems: list[LabelProblem] = []
+
+    for container in inspect_running(f"{_ENABLE_LABEL}=true"):
+        try:
+            targets.append(resolve(container, config))
+        except InvalidLabel as error:
+            problems.append(LabelProblem(container.name, str(error)))
+
+    return Discovered(targets, problems)
 
 
 def audit(config: Config) -> list[ContainerInfo]:

@@ -25,7 +25,7 @@ class ContainerError(RuntimeError):
 def start(image: str, name: str, superuser: str, password: str, db: str) -> None:
     """Start a detached Postgres container
 
-    :param image: Image to rim, e.g. ``postgres:16``
+    :param image: Image to run, e.g. ``postgres:16``
     :param name: Name to give the container
     :param superuser: Role the container initialises as its superuser
     :param password: Password for that role

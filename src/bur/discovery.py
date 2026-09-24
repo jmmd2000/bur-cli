@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from bur import dockerpg
 from bur.config import Config
+from bur.dockerpg import DockerCommandError
 
 
 class DiscoveryError(RuntimeError):
@@ -142,11 +143,12 @@ def probe_auth(target: DBTarget) -> str | None:
     :param target: A resolved database target
     :returns: None if the connection works, otherwise why it didn't
     """
-    process = dockerpg.probe(target.container, target.database, target.user)
-    _, errors = process.communicate()
-    if process.returncode == 0:
-        return None
-    return errors.decode().strip() or f"exit code {process.returncode}"
+    probe = dockerpg.probe(target.container, target.database, target.user)
+    try:
+        dockerpg.check(probe)
+    except DockerCommandError as error:
+        return str(error)
+    return None
 
 
 def resolve(container: ContainerInfo, config: Config) -> DBTarget:

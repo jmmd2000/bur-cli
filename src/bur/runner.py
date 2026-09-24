@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import secrets
 import shutil
-import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -19,6 +18,7 @@ from pathlib import Path
 from bur import crypto, dockerpg, naming, storage
 from bur.config import Config
 from bur.container import throwaway
+from bur.processes import RunningProcess
 
 
 class BackupError(RuntimeError):
@@ -172,7 +172,7 @@ def _read_database_size(container: str, db: str, user: str) -> int:
 
 
 def _encrypt_to_file(
-    source: subprocess.Popen[bytes],
+    source: RunningProcess,
     recipients: Sequence[str],
     root: Path,
     app: str,
@@ -188,7 +188,7 @@ def _restore_artefact(
     app: str,
     name: str,
     identity: str,
-    target: subprocess.Popen[bytes],
+    target: RunningProcess,
 ) -> None:
     """Decrypt one stored artefact into a running restore process"""
     with storage.open_backup(root, app, name) as ciphertext:
@@ -196,24 +196,31 @@ def _restore_artefact(
         _pipe(source, target)
 
 
-def _pipe(source: subprocess.Popen[bytes], target: subprocess.Popen[bytes]) -> None:
-    """Copy a decrypt's output into a restore's input, checking both exit codes"""
-    if source.stdout is None or target.stdin is None:
+def _pipe(source: RunningProcess, target: RunningProcess) -> None:
+    """Copy a decrypt's output into a restore's input, checking both exit codes
+
+    If the restore stopped reading part way, its error is checked first, otherwise the decrypt's is.
+    """
+    source_stdout = source.process.stdout
+    target_stdin = target.process.stdin
+    if source_stdout is None or target_stdin is None:
         raise DrillError("restore pipeline is missing a pipe")
 
+    target_stopped_reading = False
     try:
-        shutil.copyfileobj(source.stdout, target.stdin)
+        shutil.copyfileobj(source_stdout, target_stdin)
     except BrokenPipeError:
-        pass
+        target_stopped_reading = True
 
-    target.stdin.close()
-    source.stdout.close()
-    target.wait()
-    source.wait()
+    target_stdin.close()
+    source_stdout.close()
 
-    if source.returncode != 0:
-        raise DrillError(f"decrypt failed with exit code {source.returncode}")
-    dockerpg.check(target)
+    if target_stopped_reading:
+        dockerpg.check(target)
+        crypto.check(source)
+    else:
+        crypto.check(source)
+        dockerpg.check(target)
 
 
 def _count_every_table(container: str, db: str, user: str) -> dict[str, int]:
@@ -228,13 +235,12 @@ def _count_every_table(container: str, db: str, user: str) -> dict[str, int]:
     return row_counts
 
 
-def _read_output(process: subprocess.Popen[bytes]) -> str:
-    """Read a finished query's stdout, error if it exited non-zero"""
-    stream = process.stdout
+def _read_output(running: RunningProcess) -> str:
+    """Read a query's stdout, error if it exited non-zero"""
+    stream = running.process.stdout
     if stream is None:
         raise RuntimeError("query process has no stdout")
     output = stream.read().decode()
     stream.close()
-    process.wait()
-    dockerpg.check(process)
+    dockerpg.check(running)
     return output.strip()

@@ -5,8 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from bur import crypto
+from bur import crypto, processes
 from bur.crypto import CryptoError
+from bur.processes import RunningProcess
 
 
 def _generate_keypair(identity_path: Path) -> str:
@@ -19,11 +20,11 @@ def _generate_keypair(identity_path: Path) -> str:
     raise AssertionError("age-keygen produced no public key")
 
 
-def _source_emitting(data: bytes, tmp_path: Path) -> subprocess.Popen[bytes]:
+def _source_emitting(data: bytes, tmp_path: Path) -> RunningProcess:
     """A process that writes data to stdout and exits 0, standing in for pg_dump."""
     source_file = tmp_path / "plaintext.bin"
     source_file.write_bytes(data)
-    return subprocess.Popen(["cat", str(source_file)], stdout=subprocess.PIPE)
+    return processes.start(["cat", str(source_file)], stdout=subprocess.PIPE)
 
 
 @pytest.fixture
@@ -44,12 +45,12 @@ def test_encrypt_then_decrypt_round_trips(keypair: tuple[str, Path], tmp_path: P
 
     with cipher.open("rb") as ciphertext:
         decrypted = crypto.decrypt(ciphertext, str(identity))
-        stream = decrypted.stdout
+        stream = decrypted.process.stdout
         assert stream is not None
         recovered = stream.read()
-        decrypted.wait()
+        stream.close()
+        crypto.check(decrypted)  # no raise
 
-    assert decrypted.returncode == 0
     assert recovered == plaintext
 
 
@@ -71,14 +72,14 @@ def test_mid_stream_failure_fails_despite_age_exiting_zero(
     cipher = tmp_path / "backup.age"
 
     # emits some bytes then dies non-zero; age sees a clean EOF and exits 0
-    source = subprocess.Popen(
-        ["sh", "-c", "printf 'partial'; exit 1"],
+    source = processes.start(
+        ["sh", "-c", "printf 'partial'; echo 'pg_dump: error: connection lost' >&2; exit 1"],
         stdout=subprocess.PIPE,
     )
     with cipher.open("wb") as out:
         with pytest.raises(CryptoError) as excinfo:
             crypto.encrypt(source, [recipient], out)
-    assert "source" in str(excinfo.value)
+    assert str(excinfo.value) == "backup source failed: pg_dump: error: connection lost"
 
 
 def test_encrypt_needs_a_recipient(tmp_path: Path) -> None:
@@ -87,7 +88,7 @@ def test_encrypt_needs_a_recipient(tmp_path: Path) -> None:
     with cipher.open("wb") as out:
         with pytest.raises(CryptoError):
             crypto.encrypt(source, [], out)
-    source.wait()
+    processes.finish(source)
 
 
 def test_decrypt_with_the_wrong_identity_fails(keypair: tuple[str, Path], tmp_path: Path) -> None:
@@ -102,9 +103,25 @@ def test_decrypt_with_the_wrong_identity_fails(keypair: tuple[str, Path], tmp_pa
 
     with cipher.open("rb") as ciphertext:
         decrypted = crypto.decrypt(ciphertext, str(wrong_identity))
-        stream = decrypted.stdout
+        stream = decrypted.process.stdout
         assert stream is not None
         stream.read()
-        decrypted.wait()
+        stream.close()
+        with pytest.raises(CryptoError) as excinfo:
+            crypto.check(decrypted)
 
-    assert decrypted.returncode != 0
+    assert "no identity matched any of the recipients" in str(excinfo.value)
+
+
+def test_encrypt_reports_both_failures_when_source_and_age_fail(tmp_path: Path) -> None:
+    cipher = tmp_path / "backup.age"
+    source = processes.start(
+        ["sh", "-c", "echo 'pg_dump: error: boom' >&2; exit 1"], stdout=subprocess.PIPE
+    )
+
+    with cipher.open("wb") as out:
+        with pytest.raises(CryptoError) as excinfo:
+            crypto.encrypt(source, ["not-an-age-recipient"], out)
+
+    message = str(excinfo.value)
+    assert message.startswith("backup source failed: pg_dump: error: boom; age failed: ")

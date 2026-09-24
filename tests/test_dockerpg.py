@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from bur import dockerpg
+from bur import dockerpg, processes
 from bur.dockerpg import DockerCommandError
 
 
@@ -79,27 +79,26 @@ def test_user_and_db_are_shell_quoted(popen_calls: list[_FakePopen]) -> None:
 
 
 def test_check_accepts_a_zero_exit() -> None:
-    process = subprocess.Popen(["sh", "-c", "exit 0"])
-    process.wait()
-    dockerpg.check(process)  # no raise
+    dockerpg.check(processes.start(["sh", "-c", "exit 0"]))  # no raise
 
 
-def test_check_raises_on_a_non_zero_exit() -> None:
-    process = subprocess.Popen(["sh", "-c", "exit 3"])
-    process.wait()
+def test_check_raises_with_the_commands_stderr() -> None:
+    running = processes.start(["sh", "-c", "echo 'database \"x\" does not exist' >&2; exit 3"])
+
     with pytest.raises(DockerCommandError) as excinfo:
-        dockerpg.check(process)
+        dockerpg.check(running)
+
     assert excinfo.value.returncode == 3
+    assert str(excinfo.value) == 'database "x" does not exist'
 
 
-def test_check_rejects_an_unfinished_process() -> None:
-    process = subprocess.Popen(["sh", "-c", "sleep 5"])
-    try:
-        with pytest.raises(ValueError):
-            dockerpg.check(process)
-    finally:
-        process.kill()
-        process.wait()
+def test_check_falls_back_to_the_exit_code_without_stderr() -> None:
+    running = processes.start(["sh", "-c", "exit 3"])
+
+    with pytest.raises(DockerCommandError) as excinfo:
+        dockerpg.check(running)
+
+    assert str(excinfo.value) == "docker exec command failed with exit code 3"
 
 
 def test_database_size_queries_pg_database_size(popen_calls: list[_FakePopen]) -> None:
@@ -150,8 +149,7 @@ def test_probe_runs_a_trivial_query(popen_calls: list[_FakePopen]) -> None:
     assert call.args[-1] == (
         "PGPASSWORD=\"${POSTGRES_PASSWORD:-}\" psql -tAc 'SELECT 1' -U appuser -d app"
     )
-    assert call.kwargs["stdout"] is subprocess.PIPE
-    assert call.kwargs["stderr"] is subprocess.PIPE
+    assert call.kwargs["stdout"] is subprocess.DEVNULL
 
 
 def test_probe_shell_quotes_user_and_db(popen_calls: list[_FakePopen]) -> None:

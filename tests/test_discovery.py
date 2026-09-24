@@ -6,9 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from bur import discovery, dockerpg
+from bur import discovery, dockerpg, processes
 from bur.config import Config
 from bur.discovery import ContainerInfo, DBTarget, DiscoveryError, InvalidLabel
+from bur.processes import RunningProcess
 
 _INSPECT = json.dumps(
     [
@@ -278,10 +279,8 @@ def _target() -> DBTarget:
 
 
 def test_probe_auth_passes_when_the_query_works(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_probe(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
-        return subprocess.Popen(
-            ["sh", "-c", "exit 0"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
+    def fake_probe(container: str, db: str, user: str) -> RunningProcess:
+        return processes.start(["sh", "-c", "exit 0"])
 
     monkeypatch.setattr(dockerpg, "probe", fake_probe)
 
@@ -289,11 +288,9 @@ def test_probe_auth_passes_when_the_query_works(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_probe_auth_reports_why_it_failed(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_probe(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
-        return subprocess.Popen(
-            ["sh", "-c", "echo 'role \"gift_owner\" does not exist' >&2; exit 2"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+    def fake_probe(container: str, db: str, user: str) -> RunningProcess:
+        return processes.start(
+            ["sh", "-c", "echo 'role \"gift_owner\" does not exist' >&2; exit 2"]
         )
 
     monkeypatch.setattr(dockerpg, "probe", fake_probe)

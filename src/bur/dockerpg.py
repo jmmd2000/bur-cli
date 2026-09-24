@@ -4,14 +4,18 @@
 comes from a client of the right major version. If the container uses a
 password, ``${POSTGRES_PASSWORD:-}`` picks it up from the container.
 
-Each wrapper is thin, it returns a :class:`subproces.Popen` with one pipe
-open and leaves the streaming and exit-code checking to the caller.
+Each wrapper is thin, it returns a :class:`~bur.processes.RunningProcess` with
+at most one pipe open and leaves the streaming and exit-code checking to the caller.
+Each command's stderr is kept, so a failure carries the tool's own error message.
 """
 
 from __future__ import annotations
 
 import shlex
 import subprocess
+
+from bur import processes
+from bur.processes import RunningProcess
 
 _PGPASSWORD_PREFIX = 'PGPASSWORD="${POSTGRES_PASSWORD:-}"'
 _TABLE_NAMES_SQL = (
@@ -23,12 +27,17 @@ _TABLE_NAMES_SQL = (
 class DockerCommandError(RuntimeError):
     """A Postgres tool run via ``docker exec`` exited with a non-zero code"""
 
-    def __init__(self, returncode: int) -> None:
+    def __init__(self, returncode: int, stderr: str) -> None:
         self.returncode = returncode
-        super().__init__(f"docker exec command failed with exit code {returncode}")
+        self.stderr = stderr
+        if stderr:
+            message = stderr
+        else:
+            message = f"docker exec command failed with exit code {returncode}"
+        super().__init__(message)
 
 
-def dump(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
+def dump(container: str, db: str, user: str) -> RunningProcess:
     """``pg_dump`` one db in a custom format, streamed to stdout
 
     :param container: Container running the database
@@ -38,10 +47,10 @@ def dump(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
     """
     inner = f"pg_dump -Fc -U {shlex.quote(user)} {shlex.quote(db)}"
     command = _exec_command(container, inner)
-    return subprocess.Popen(command, stdout=subprocess.PIPE)
+    return processes.start(command, stdout=subprocess.PIPE)
 
 
-def dump_globals(container: str, user: str) -> subprocess.Popen[bytes]:
+def dump_globals(container: str, user: str) -> RunningProcess:
     """``pg_dumpall --globals-only``, streamed to stdout
 
     Grabs the roles, passwords and grants that a single-DB dump skips, so the
@@ -53,10 +62,10 @@ def dump_globals(container: str, user: str) -> subprocess.Popen[bytes]:
     """
     inner = f"pg_dumpall --globals-only -U {shlex.quote(user)}"
     command = _exec_command(container, inner)
-    return subprocess.Popen(command, stdout=subprocess.PIPE)
+    return processes.start(command, stdout=subprocess.PIPE)
 
 
-def database_size(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
+def database_size(container: str, db: str, user: str) -> RunningProcess:
     """Query a database's on-disk size in bytes, streamed to stdout
 
     Reports the raw ``pg_database_size`` of the database.
@@ -71,10 +80,10 @@ def database_size(container: str, db: str, user: str) -> subprocess.Popen[bytes]
         f"-U {shlex.quote(user)} -d {shlex.quote(db)}"
     )
     command = _exec_command(container, inner)
-    return subprocess.Popen(command, stdout=subprocess.PIPE)
+    return processes.start(command, stdout=subprocess.PIPE)
 
 
-def probe(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
+def probe(container: str, db: str, user: str) -> RunningProcess:
     """Run a trivial query to confirm the database accepts a connection
 
     :param container: Container running the database
@@ -84,10 +93,10 @@ def probe(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
     """
     inner = f"psql -tAc 'SELECT 1' -U {shlex.quote(user)} -d {shlex.quote(db)}"
     command = _exec_command(container, inner)
-    return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return processes.start(command, stdout=subprocess.DEVNULL)
 
 
-def table_names(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
+def table_names(container: str, db: str, user: str) -> RunningProcess:
     """List a database's user tables, one per line, streamed to stdout
 
     Names come back quoted, ready to use in a follow-up query.
@@ -99,10 +108,10 @@ def table_names(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
     """
     inner = f"psql -tAc {shlex.quote(_TABLE_NAMES_SQL)} -U {shlex.quote(user)} -d {shlex.quote(db)}"
     command = _exec_command(container, inner)
-    return subprocess.Popen(command, stdout=subprocess.PIPE)
+    return processes.start(command, stdout=subprocess.PIPE)
 
 
-def count_rows(container: str, db: str, user: str, table: str) -> subprocess.Popen[bytes]:
+def count_rows(container: str, db: str, user: str, table: str) -> RunningProcess:
     """Count the rows in one table, streamed to stdout
 
     :param container: Container running the database
@@ -116,10 +125,10 @@ def count_rows(container: str, db: str, user: str, table: str) -> subprocess.Pop
         f"-U {shlex.quote(user)} -d {shlex.quote(db)}"
     )
     command = _exec_command(container, inner)
-    return subprocess.Popen(command, stdout=subprocess.PIPE)
+    return processes.start(command, stdout=subprocess.PIPE)
 
 
-def restore(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
+def restore(container: str, db: str, user: str) -> RunningProcess:
     """``pg_restore`` a custom format dump from stdin
 
     ``--single-transaction`` so a failed restore rolls back instead of leaving a
@@ -135,10 +144,10 @@ def restore(container: str, db: str, user: str) -> subprocess.Popen[bytes]:
         f"-U {shlex.quote(user)} -d {shlex.quote(db)}"
     )
     command = _exec_command(container, inner, interactive=True)
-    return subprocess.Popen(command, stdin=subprocess.PIPE)
+    return processes.start(command, stdin=subprocess.PIPE)
 
 
-def restore_globals(container: str, user: str) -> subprocess.Popen[bytes]:
+def restore_globals(container: str, user: str) -> RunningProcess:
     """``psql`` the cluster globals from stdin
 
     Talks to the ``postgres`` database since the target may not exist yet, and
@@ -146,20 +155,18 @@ def restore_globals(container: str, user: str) -> subprocess.Popen[bytes]:
     """
     inner = f"psql -q -U {shlex.quote(user)} -d postgres"
     command = _exec_command(container, inner, interactive=True)
-    return subprocess.Popen(command, stdin=subprocess.PIPE)
+    return processes.start(command, stdin=subprocess.PIPE)
 
 
-def check(process: subprocess.Popen[bytes]) -> None:
-    """Error if a finished process exited with a non-zero code
+def check(running: RunningProcess) -> None:
+    """Wait for a command to finish and error if it exited with a non-zero code
 
-    :param process: A process that's already done
-    :raises ValueError: if it hasn't finished
+    :param running: A command started by one of the wrappers above
     :raises DockerCommandError: If it exited non-zero
     """
-    if process.returncode is None:
-        raise ValueError("process has not finished")
-    if process.returncode != 0:
-        raise DockerCommandError(process.returncode)
+    stderr = processes.finish(running)
+    if running.process.returncode != 0:
+        raise DockerCommandError(running.process.returncode, stderr)
 
 
 def _exec_command(container: str, inner: str, *, interactive: bool = False) -> list[str]:

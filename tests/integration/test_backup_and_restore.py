@@ -8,7 +8,7 @@ import pytest
 from bur import runner
 from bur.config import Config
 from bur.container import throwaway
-from bur.runner import DrillError
+from bur.crypto import CryptoError
 
 _MAJOR = "16"
 _PASSWORD = "roundtrip-password"
@@ -93,7 +93,7 @@ def test_a_failed_drill_still_removes_its_container(tmp_path: Path) -> None:
     wrong_identity = tmp_path / "wrong.txt"
     _generate_keypair(wrong_identity)
 
-    with pytest.raises(DrillError):
+    with pytest.raises(CryptoError, match="no identity matched any of the recipients"):
         runner.restore_drill(config, _APP, str(wrong_identity), _MAJOR, _APP)
 
     assert _drill_containers() == []

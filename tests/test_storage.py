@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import os
+import stat
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -27,6 +29,28 @@ def test_atomic_write_leaves_nothing_on_failure(tmp_path: Path) -> None:
     app_dir = tmp_path / "app"
     assert not (app_dir / name).exists()
     assert list(app_dir.iterdir()) == []  # no leftover temp file either
+
+
+def test_atomic_write_fsyncs_the_directory_after_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    synced: list[str] = []
+    real_fsync = os.fsync
+
+    def recording_fsync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            synced.append("directory")
+        else:
+            synced.append("file")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", recording_fsync)
+
+    name = build("app", datetime(2026, 1, 1, tzinfo=UTC))
+    with storage.atomic_write(tmp_path, "app", name) as handle:
+        handle.write(b"ciphertext")
+
+    assert synced == ["file", "directory"]
 
 
 def test_write_copies_a_stream(tmp_path: Path) -> None:

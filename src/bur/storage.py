@@ -67,10 +67,20 @@ def atomic_write(root: Path, app: str, name: str) -> Generator[IO[bytes]]:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_path, target)
+        _fsync_directory(directory)
         success = True
     finally:
         if not success:
             temp_path.unlink(missing_ok=True)
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Flush a directory's entries to disk"""
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def write(root: Path, app: str, name: str, stream: IO[bytes]) -> None:

@@ -17,7 +17,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO
 
-from bur.naming import InvalidBackupName, parse
+from bur.naming import ArtefactKind, InvalidBackupName, parse
+
+_RUN_KINDS: tuple[ArtefactKind, ...] = ("dump", "globals")
 
 
 @dataclass(frozen=True)
@@ -65,10 +67,20 @@ def atomic_write(root: Path, app: str, name: str) -> Generator[IO[bytes]]:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_path, target)
+        _fsync_directory(directory)
         success = True
     finally:
         if not success:
             temp_path.unlink(missing_ok=True)
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Flush a directory's entries to disk"""
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def write(root: Path, app: str, name: str, stream: IO[bytes]) -> None:
@@ -144,14 +156,15 @@ def free_space(root: Path) -> int:
 
 
 def find_backup_pair(root: Path, app: str, timestamp: datetime | None = None) -> BackupPair:
-    """Find one run's dump and globals artefacts
+    """Find one complete run's dump and globals artefacts
 
     :param root: Backup root directory
     :param app: Application to look up
-    :param timestamp: Run to find, defaults to the newest
+    :param timestamp: Run to find, or None for the newest complete run
     :returns: The two artefact names and the timestamp they share
-    :raises BackupNotFound: If there are no backups, the timestamp is unknown, or that run is
-    missing one of its two artefacts"""
+    :raises BackupNotFound: If there are no complete backups, the timestamp is unknown, or that run
+    is missing one of its artefacts
+    """
     runs: dict[datetime, dict[str, str]] = {}
     for backup in list_backups(root, app):
         parsed = parse(backup.name)
@@ -160,14 +173,26 @@ def find_backup_pair(root: Path, app: str, timestamp: datetime | None = None) ->
     if not runs:
         raise BackupNotFound(f"no backups for {app} under {root}")
 
-    chosen = max(runs) if timestamp is None else timestamp
+    if timestamp is None:
+        complete = [when for when, artefacts in runs.items() if not _missing_kinds(artefacts)]
+        if not complete:
+            raise BackupNotFound(f"no complete backup for {app} under {root}")
+        chosen = max(complete)
+    else:
+        chosen = timestamp
+
     artefacts = runs.get(chosen)
     if artefacts is None:
-        raise BackupNotFound(f"no backup for {app} at {chosen.isoformat()}")
+        raise BackupNotFound(f"no backup found for {app} at {chosen.isoformat()}")
 
-    missing = sorted({"dump", "globals"} - set(artefacts))
+    missing = _missing_kinds(artefacts)
     if missing:
         raise BackupNotFound(
-            f"backup for {app} at {chosen.isoformat()} is missing its {' and '.join(missing)}"
+            f"backup for {app} at {chosen.isoformat()} is missing its {'and'.join(missing)}"
         )
     return BackupPair(artefacts["dump"], artefacts["globals"], chosen)
+
+
+def _missing_kinds(artefacts: dict[str, str]) -> list[str]:
+    """The artefact kinds a run doesn't have yet"""
+    return [kind for kind in _RUN_KINDS if kind not in artefacts]

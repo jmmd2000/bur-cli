@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import os
+import stat
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -27,6 +29,28 @@ def test_atomic_write_leaves_nothing_on_failure(tmp_path: Path) -> None:
     app_dir = tmp_path / "app"
     assert not (app_dir / name).exists()
     assert list(app_dir.iterdir()) == []  # no leftover temp file either
+
+
+def test_atomic_write_fsyncs_the_directory_after_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    synced: list[str] = []
+    real_fsync = os.fsync
+
+    def recording_fsync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            synced.append("directory")
+        else:
+            synced.append("file")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", recording_fsync)
+
+    name = build("app", datetime(2026, 1, 1, tzinfo=UTC))
+    with storage.atomic_write(tmp_path, "app", name) as handle:
+        handle.write(b"ciphertext")
+
+    assert synced == ["file", "directory"]
 
 
 def test_write_copies_a_stream(tmp_path: Path) -> None:
@@ -115,8 +139,8 @@ def test_find_backup_pair_needs_both_artefacts(tmp_path: Path) -> None:
     storage.write(tmp_path, "app", build("app", when, "dump"), io.BytesIO(b"payload"))
 
     with pytest.raises(storage.BackupNotFound) as excinfo:
-        storage.find_backup_pair(tmp_path, "app")
-    assert "globals" in str(excinfo.value)
+        storage.find_backup_pair(tmp_path, "app", when)
+    assert "missing its globals" in str(excinfo.value)
 
 
 def test_find_backup_pair_raises_when_there_are_none(tmp_path: Path) -> None:
@@ -129,3 +153,22 @@ def test_find_backup_pair_raises_for_an_unknown_timestamp(tmp_path: Path) -> Non
 
     with pytest.raises(storage.BackupNotFound):
         storage.find_backup_pair(tmp_path, "app", datetime(2020, 1, 1, tzinfo=UTC))
+
+
+def test_find_backup_pair_skips_a_newer_incomplete_run(tmp_path: Path) -> None:
+    older = datetime(2026, 1, 1, tzinfo=UTC)
+    newer = datetime(2026, 2, 1, tzinfo=UTC)
+    _write_pair(tmp_path, "app", older)
+    storage.write(tmp_path, "app", build("app", newer, "dump"), io.BytesIO(b"payload"))
+
+    pair = storage.find_backup_pair(tmp_path, "app")
+
+    assert pair.timestamp == older
+
+
+def test_find_backup_pair_raises_when_no_run_is_complete(tmp_path: Path) -> None:
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    storage.write(tmp_path, "app", build("app", when, "globals"), io.BytesIO(b"payload"))
+
+    with pytest.raises(storage.BackupNotFound, match="no complete backup"):
+        storage.find_backup_pair(tmp_path, "app")

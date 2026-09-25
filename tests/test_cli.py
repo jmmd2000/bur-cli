@@ -185,7 +185,7 @@ def test_restore_drills_the_named_app(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, object]] = []
     monkeypatch.setattr(runner, "restore_drill", _fake_drill(calls, _drill_result()))
 
-    outcome = _cli.invoke(app, _restore_args("--drill"))
+    outcome = _cli.invoke(app, _restore_args("--drill", "--latest"))
 
     assert outcome.exit_code == 0
     assert calls[0]["app"] == "giftring"
@@ -205,6 +205,31 @@ def test_restore_accepts_a_date(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls[0]["timestamp"] == datetime(2026, 6, 3, 17, 48, tzinfo=UTC)
 
 
+def test_restore_needs_a_date_or_latest(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(runner, "restore_drill", _fake_drill(calls, _drill_result()))
+
+    outcome = _cli.invoke(app, _restore_args("--drill"))
+
+    assert outcome.exit_code == 1
+    assert "--date" in outcome.output
+    assert "--latest" in outcome.output
+    assert calls == []
+
+
+def test_restore_rejects_both_a_date_and_latest(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(runner, "restore_drill", _fake_drill(calls, _drill_result()))
+
+    outcome = _cli.invoke(app, _restore_args("--drill", "--latest", "--date", "20260603T174800Z"))
+
+    assert outcome.exit_code == 1
+    assert "not both" in outcome.output
+    assert calls == []
+
+
 def test_restore_rejects_a_bad_date(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_config(monkeypatch)
 
@@ -217,7 +242,7 @@ def test_restore_reports_the_row_counts(monkeypatch: pytest.MonkeyPatch) -> None
     _patch_config(monkeypatch)
     monkeypatch.setattr(runner, "restore_drill", _fake_drill([], _drill_result()))
 
-    outcome = _cli.invoke(app, _restore_args("--drill"))
+    outcome = _cli.invoke(app, _restore_args("--drill", "--latest"))
 
     assert "public.widgets" in outcome.output
     assert "100" in outcome.output
@@ -231,7 +256,7 @@ def test_a_failed_drill_exits_non_zero(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(runner, "restore_drill", fail)
 
-    outcome = _cli.invoke(app, _restore_args("--drill"))
+    outcome = _cli.invoke(app, _restore_args("--drill", "--latest"))
 
     assert outcome.exit_code == 1
 

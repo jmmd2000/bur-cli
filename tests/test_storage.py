@@ -115,8 +115,8 @@ def test_find_backup_pair_needs_both_artefacts(tmp_path: Path) -> None:
     storage.write(tmp_path, "app", build("app", when, "dump"), io.BytesIO(b"payload"))
 
     with pytest.raises(storage.BackupNotFound) as excinfo:
-        storage.find_backup_pair(tmp_path, "app")
-    assert "globals" in str(excinfo.value)
+        storage.find_backup_pair(tmp_path, "app", when)
+    assert "missing its globals" in str(excinfo.value)
 
 
 def test_find_backup_pair_raises_when_there_are_none(tmp_path: Path) -> None:
@@ -129,3 +129,22 @@ def test_find_backup_pair_raises_for_an_unknown_timestamp(tmp_path: Path) -> Non
 
     with pytest.raises(storage.BackupNotFound):
         storage.find_backup_pair(tmp_path, "app", datetime(2020, 1, 1, tzinfo=UTC))
+
+
+def test_find_backup_pair_skips_a_newer_incomplete_run(tmp_path: Path) -> None:
+    older = datetime(2026, 1, 1, tzinfo=UTC)
+    newer = datetime(2026, 2, 1, tzinfo=UTC)
+    _write_pair(tmp_path, "app", older)
+    storage.write(tmp_path, "app", build("app", newer, "dump"), io.BytesIO(b"payload"))
+
+    pair = storage.find_backup_pair(tmp_path, "app")
+
+    assert pair.timestamp == older
+
+
+def test_find_backup_pair_raises_when_no_run_is_complete(tmp_path: Path) -> None:
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    storage.write(tmp_path, "app", build("app", when, "globals"), io.BytesIO(b"payload"))
+
+    with pytest.raises(storage.BackupNotFound, match="no complete backup"):
+        storage.find_backup_pair(tmp_path, "app")

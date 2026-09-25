@@ -85,8 +85,11 @@ def restore(
         str | None, typer.Option(help="Database to restore into, defaults to the app name")
     ] = None,
     date: Annotated[
-        str | None, typer.Option("--date", help="Backup to restore, defaults to the newest")
+        str | None, typer.Option("--date", help="Backup to restore, by its timestamp")
     ] = None,
+    latest: Annotated[
+        bool, typer.Option("--latest", help="Restore the newest complete backup")
+    ] = False,
     config_path: Annotated[
         Path | None, typer.Option("--config", help="Path to bur.toml, defaults to $BUR_CONFIG")
     ] = None,
@@ -94,6 +97,16 @@ def restore(
     """Restore a stored backup"""
     if not drill:
         typer.secho("only --drill rn", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    if date is None and not latest:
+        typer.secho(
+            "choose a backup with --date (e.g. 20260603T174800Z) or --latest",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    if date is not None and latest:
+        typer.secho("pass --date or --latest, not both", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
     config = _load_config_or_exit(config_path)

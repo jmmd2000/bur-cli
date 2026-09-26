@@ -1,6 +1,6 @@
 [project]
 name = "bur"
-version = "0.9.0"
+version = "0.10.0"
 description = "Back up and restore dockerised Postgres databases, encrypted and pushed to Cloudflare R2"
 readme = "README.md"
 authors = [

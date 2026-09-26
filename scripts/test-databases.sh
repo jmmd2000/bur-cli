@@ -80,7 +80,7 @@ up() {
 
         local bur_labels=()
         if [[ $labelled == true ]]; then
-            bur_labels=(--label "bur.enable=true" --label "bur.user=$name")
+            bur_labels=(--label "bur.enable=true" --label "bur.app=$name" --label "bur.user=$name")
         fi
 
         echo "creating $name (postgres:$version)"

@@ -165,12 +165,14 @@ def _config(exclude: tuple[str, ...] = (), keep_last: int = 10) -> Config:
     )
 
 
-def test_defaults_come_from_the_container_and_the_config() -> None:
-    target = discovery.resolve(_container({"bur.enable": "true"}), _config(keep_last=7))
+def test_defaults_come_from_the_app_and_the_config() -> None:
+    labels = {"bur.enable": "true", "bur.app": "giftring"}
+
+    target = discovery.resolve(_container(labels), _config(keep_last=7))
 
     assert target.container == "giftring-db-1"
-    assert target.app == "giftring-db-1"
-    assert target.database == "giftring-db-1"
+    assert target.app == "giftring"
+    assert target.database == "giftring"
     assert target.user == "postgres"
     assert target.keep_last == 7
     assert target.schedule == "daily"
@@ -203,15 +205,17 @@ def test_a_traversing_app_name_is_rejected() -> None:
 
 
 def test_a_hostile_database_or_user_is_rejected() -> None:
-    with pytest.raises(InvalidLabel):
-        discovery.resolve(_container({"bur.database": "a; drop database x"}), _config())
-    with pytest.raises(InvalidLabel):
-        discovery.resolve(_container({"bur.user": "../root"}), _config())
+    hostile_database = {"bur.app": "giftring", "bur.database": "a; drop database x"}
+    with pytest.raises(InvalidLabel, match="bur.database"):
+        discovery.resolve(_container(hostile_database), _config())
+    hostile_user = {"bur.app": "giftring", "bur.user": "../root"}
+    with pytest.raises(InvalidLabel, match="bur.user"):
+        discovery.resolve(_container(hostile_user), _config())
 
 
-def test_a_container_name_that_is_not_a_valid_app_name_is_rejected() -> None:
-    with pytest.raises(InvalidLabel):
-        discovery.resolve(_container({}, name="MyApp.db"), _config())
+def test_bur_app_is_required() -> None:
+    with pytest.raises(InvalidLabel, match="bur.app is required"):
+        discovery.resolve(_container({"bur.enable": "true"}), _config())
 
 
 def test_an_excluded_app_is_resolved_and_marked() -> None:
@@ -222,15 +226,10 @@ def test_an_excluded_app_is_resolved_and_marked() -> None:
 
 
 def test_a_bad_keep_last_is_rejected() -> None:
-    with pytest.raises(InvalidLabel):
-        discovery.resolve(_container({"bur.keep_last": "loads"}), _config())
-    with pytest.raises(InvalidLabel):
-        discovery.resolve(_container({"bur.keep_last": "0"}), _config())
-
-
-def test_the_old_retention_keep_label_names_its_replacement() -> None:
-    with pytest.raises(InvalidLabel, match="renamed to bur.keep_last"):
-        discovery.resolve(_container({"bur.retention.keep": "3"}), _config())
+    with pytest.raises(InvalidLabel, match="bur.keep_last"):
+        discovery.resolve(_container({"bur.app": "giftring", "bur.keep_last": "loads"}), _config())
+    with pytest.raises(InvalidLabel, match="bur.keep_last"):
+        discovery.resolve(_container({"bur.app": "giftring", "bur.keep_last": "0"}), _config())
 
 
 def test_discover_filters_on_the_enable_label(monkeypatch: pytest.MonkeyPatch) -> None:

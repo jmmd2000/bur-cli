@@ -177,10 +177,13 @@ def resolve(container: ContainerInfo, config: Config) -> DBTarget:
     :param container: A running container with ```bur.*`` labels
     :param config: Loaded config
     :returns: The resolved target
-    :raises InvalidLabel: If a name or ``bur.keep_last`` value is not usable
+    :raises InvalidLabel: If ``bur.app`` is missing, or a name or ``bur.keep_last``
+        value is not usable
     """
     labels = container.labels
-    app = _name(labels.get("bur.app", container.name), "bur.app")
+    if "bur.app" not in labels:
+        raise InvalidLabel("bur.app is required")
+    app = _name(labels["bur.app"], "bur.app")
     database = _name(labels.get("bur.database", app), "bur.database")
     user = _name(labels.get("bur.user", _DEFAULT_USER), "bur.user")
 
@@ -204,8 +207,6 @@ def _name(value: str, label: str) -> str:
 
 def _keep_last(labels: dict[str, str], default: int) -> int:
     """Read ``bur.keep_last``, falling back to the global default"""
-    if "bur.retention.keep" in labels:
-        raise InvalidLabel("bur.retention.keep has been renamed to bur.keep_last")
     raw = labels.get("bur.keep_last")
     if raw is None:
         return default

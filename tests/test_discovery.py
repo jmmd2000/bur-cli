@@ -218,6 +218,14 @@ def test_bur_app_is_required() -> None:
         discovery.resolve(_container({"bur.enable": "true"}), _config())
 
 
+def test_a_container_name_in_exclude_excludes_a_labelled_database() -> None:
+    labels = {"bur.app": "giftring"}
+
+    target = discovery.resolve(_container(labels), _config(exclude=("giftring-db-1",)))
+
+    assert target.excluded is True
+
+
 def test_an_excluded_app_is_resolved_and_marked() -> None:
     target = discovery.resolve(_container({"bur.app": "giftring"}), _config(exclude=("giftring",)))
 

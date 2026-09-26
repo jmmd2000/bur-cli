@@ -194,7 +194,7 @@ def resolve(container: ContainerInfo, config: Config) -> DBTarget:
         user=user,
         keep_last=_keep_last(labels, config.keep_last),
         schedule=labels.get("bur.schedule", _DEFAULT_SCHEDULE),
-        excluded=app in config.exclude,
+        excluded=app in config.exclude or container.name in config.exclude,
     )
 
 

@@ -130,7 +130,34 @@ def discover(config: Config) -> Discovered:
         except InvalidLabel as error:
             problems.append(LabelProblem(container.name, str(error)))
 
-    return Discovered(targets, problems)
+    unique_targets, duplicate_problems = _split_duplicate_apps(targets)
+    return Discovered(unique_targets, problems + duplicate_problems)
+
+
+def _split_duplicate_apps(targets: list[DBTarget]) -> tuple[list[DBTarget], list[LabelProblem]]:
+    """Separate targets that share a ``bur.app`` with another non-excluded target
+
+    :param targets: Resolved targets
+    :returns: The targets to keep, and a problem for each one sharing its app
+    """
+    containers_by_app: dict[str, list[str]] = {}
+    for target in targets:
+        if not target.excluded:
+            containers_by_app.setdefault(target.app, []).append(target.container)
+
+    kept: list[DBTarget] = []
+    problems: list[LabelProblem] = []
+    for target in targets:
+        if target.excluded or len(containers_by_app[target.app]) == 1:
+            kept.append(target)
+            continue
+        others = [name for name in containers_by_app[target.app] if name != target.container]
+        problems.append(
+            LabelProblem(
+                target.container, f"bur.app {target.app!r} is also used by {', '.join(others)}"
+            )
+        )
+    return kept, problems
 
 
 def audit(config: Config) -> list[ContainerInfo]:

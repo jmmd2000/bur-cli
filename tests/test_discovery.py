@@ -328,6 +328,41 @@ def test_one_bad_container_does_not_stop_the_others(
     assert "bur.app" in discovered.problems[0].problem
 
 
+_SHARED_APP = json.dumps(
+    [
+        {
+            "Name": "/giftring-db-1",
+            "Config": {"Image": "postgres:16", "Labels": {"bur.app": "giftring"}},
+        },
+        {
+            "Name": "/giftring-old-db-1",
+            "Config": {"Image": "postgres:16", "Labels": {"bur.app": "giftring"}},
+        },
+    ]
+)
+
+
+def test_containers_sharing_an_app_are_all_problems(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_docker(monkeypatch, [], "a\nb\n", _SHARED_APP)
+
+    discovered = discovery.discover(_config())
+
+    assert discovered.targets == []
+    problems = {problem.container: problem.problem for problem in discovered.problems}
+    assert "giftring-old-db-1" in problems["giftring-db-1"]
+    assert "giftring-db-1" in problems["giftring-old-db-1"]
+
+
+def test_excluding_one_of_a_shared_app_leaves_the_other(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_docker(monkeypatch, [], "a\nb\n", _SHARED_APP)
+
+    discovered = discovery.discover(_config(exclude=("giftring-old-db-1",)))
+
+    assert discovered.problems == []
+    kept = {target.container: target.excluded for target in discovered.targets}
+    assert kept == {"giftring-db-1": False, "giftring-old-db-1": True}
+
+
 def _target() -> DBTarget:
     return DBTarget(
         container="giftring-db-1",

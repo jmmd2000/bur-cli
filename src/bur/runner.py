@@ -37,6 +37,8 @@ class BackupResult:
 
 
 _DRILL_SUPERUSER = "drillsuper"
+_BYTES_PER_MB = 1024**2
+_BYTES_PER_GB = 1024**3
 
 
 class DrillError(RuntimeError):
@@ -77,7 +79,7 @@ def backup_database(
     :param now: Run timestamp, defaults to the current UTC time
     :param dry_run: If true, check space but write nothing
     :returns: What the run produced, or would have on a dry run
-    :raises BackupError: If there isn't enough free space for the dump
+    :raises BackupError: If the dump could leave less than ``min_free_space_gb`` free
     """
     when = now or datetime.now(UTC)
     dump_name = naming.build(app, when, "dump")
@@ -85,10 +87,12 @@ def backup_database(
 
     size = _read_database_size(container, db, user)
     free = storage.free_space(config.backup_root)
-    if free < size:
+    reserve = int(config.min_free_space_gb * _BYTES_PER_GB)
+    if free - size < reserve:
         raise BackupError(
-            f"not enough free space for {app}: needs at least {size} bytes, "
-            f"{free} available under {config.backup_root}"
+            f"not enough free space for {app}: the dump can take up to {_readable_size(size)} "
+            f"and {_readable_size(free)} is free under {config.backup_root}, which would leave "
+            f"less than min_free_space_gb ({config.min_free_space_gb:g} GB)"
         )
 
     if dry_run:
@@ -160,6 +164,13 @@ def restore_drill(
         raise DrillError(f"{app} restored {len(row_counts)} tables, all of them empty")
 
     return DrillResult(app, pair.dump_name, pair.globals_name, pair.timestamp, row_counts)
+
+
+def _readable_size(size: int) -> str:
+    """Format a size in bytes as MB below a gigabyte, GB from there up"""
+    if size < _BYTES_PER_GB:
+        return f"{size / _BYTES_PER_MB:.1f} MB"
+    return f"{size / _BYTES_PER_GB:.1f} GB"
 
 
 def _read_database_size(container: str, db: str, user: str) -> int:

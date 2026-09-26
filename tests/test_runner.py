@@ -33,6 +33,10 @@ def keypair(tmp_path: Path) -> tuple[str, Path]:
     return recipient, identity
 
 
+_GB = 1024**3
+_PLENTY_OF_SPACE = 100 * _GB
+
+
 def _config(root: Path, recipient: str) -> Config:
     return Config(backup_root=root, age_recipients=(recipient,))
 
@@ -71,6 +75,7 @@ def test_backup_writes_both_artefacts(
     globals_bytes = b"-- roles, passwords and grants"
 
     monkeypatch.setattr(dockerpg, "database_size", lambda c, d, u: _shell("echo 4096"))
+    monkeypatch.setattr(storage, "free_space", lambda r: _PLENTY_OF_SPACE)
     monkeypatch.setattr(dockerpg, "dump", lambda c, d, u: _emitting(dump_bytes, tmp_path, "dump"))
     monkeypatch.setattr(
         dockerpg, "dump_globals", lambda c, u: _emitting(globals_bytes, tmp_path, "globals")
@@ -108,6 +113,40 @@ def test_backup_aborts_loudly_when_short_on_space(
     assert not (root / "app").exists()
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_backup_is_refused_when_it_would_eat_into_the_reserve(
+    keypair: tuple[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dry_run: bool
+) -> None:
+    recipient, _ = keypair
+    root = tmp_path / "backups"
+    config = _config(root, recipient)
+
+    # 2 GB dump with 6 GB free leaves 4 GB, under the default 5 GB
+    monkeypatch.setattr(dockerpg, "database_size", lambda c, d, u: _shell(f"echo {2 * _GB}"))
+    monkeypatch.setattr(storage, "free_space", lambda r: 6 * _GB)
+
+    with pytest.raises(BackupError) as excinfo:
+        runner.backup_database(config, "app", "app", "app", "app", dry_run=dry_run)
+
+    assert "min_free_space_gb (5 GB)" in str(excinfo.value)
+    assert not (root / "app").exists()
+
+
+def test_backup_goes_ahead_when_the_reserve_is_left_free(
+    keypair: tuple[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recipient, _ = keypair
+    config = _config(tmp_path / "backups", recipient)
+
+    # 2 GB dump with 7 GB free leaves exactly the default 5 GB
+    monkeypatch.setattr(dockerpg, "database_size", lambda c, d, u: _shell(f"echo {2 * _GB}"))
+    monkeypatch.setattr(storage, "free_space", lambda r: 7 * _GB)
+
+    result = runner.backup_database(config, "app", "app", "app", "app", dry_run=True)
+
+    assert result.database_size == 2 * _GB
+
+
 def test_backup_of_a_missing_database_reports_why(
     keypair: tuple[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -135,6 +174,7 @@ def test_dry_run_writes_nothing(
 
     # dump / dump_globals are left un-faked on purpose, a dry run must not call them
     monkeypatch.setattr(dockerpg, "database_size", lambda c, d, u: _shell("echo 4096"))
+    monkeypatch.setattr(storage, "free_space", lambda r: _PLENTY_OF_SPACE)
 
     result = runner.backup_database(
         config, "giftring", "giftring", "giftring", "giftring", now=when, dry_run=True
@@ -155,6 +195,7 @@ def test_truncated_dump_fails_and_leaves_no_file(
     when = datetime(2026, 6, 3, 17, 48, tzinfo=UTC)
 
     monkeypatch.setattr(dockerpg, "database_size", lambda c, d, u: _shell("echo 4096"))
+    monkeypatch.setattr(storage, "free_space", lambda r: _PLENTY_OF_SPACE)
     monkeypatch.setattr(dockerpg, "dump", lambda c, d, u: _shell("printf partial; exit 1"))
 
     with pytest.raises(crypto.CryptoError):

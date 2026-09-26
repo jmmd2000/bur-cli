@@ -17,6 +17,7 @@ exclude = ["giftring", "scratch"]
 r2_remote = "r2"
 r2_bucket = "burr"
 overdue_hours = 12
+min_free_space_gb = 20
 audit_images = ["postgres:16", "mariadb"]
 """
 
@@ -35,6 +36,7 @@ def test_minimal_config_applies_defaults(tmp_path: Path) -> None:
     )
     assert config.keep_last == 10
     assert config.overdue_hours == 24.0
+    assert config.min_free_space_gb == 5.0
     assert config.audit_images == ("postgres",)
     assert config.r2_remote == ""
 
@@ -46,6 +48,7 @@ def test_full_config_overrides_defaults(tmp_path: Path) -> None:
     assert config.age_recipients == ("age1abc", "age1def")
     assert config.r2_bucket == "burr"
     assert config.overdue_hours == 12.0
+    assert config.min_free_space_gb == 20.0
     assert config.audit_images == ("postgres:16", "mariadb")
 
 

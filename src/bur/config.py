@@ -11,6 +11,7 @@ _CONFIG_ENV_VAR = "BUR_CONFIG"
 
 _DEFAULT_KEEP_LAST = 10
 _DEFAULT_OVERDUE_HOURS = 24.0
+_DEFAULT_MIN_FREE_SPACE_GB = 5.0
 _DEFAULT_AUDIT_IMAGES = ("postgres",)
 
 _KNOWN_KEYS = frozenset(
@@ -22,6 +23,7 @@ _KNOWN_KEYS = frozenset(
         "r2_remote",
         "r2_bucket",
         "overdue_hours",
+        "min_free_space_gb",
         "audit_images",
     }
 )
@@ -41,6 +43,7 @@ class Config:
     r2_remote: str = ""
     r2_bucket: str = ""
     overdue_hours: float = _DEFAULT_OVERDUE_HOURS
+    min_free_space_gb: float = _DEFAULT_MIN_FREE_SPACE_GB
     audit_images: tuple[str, ...] = _DEFAULT_AUDIT_IMAGES
     exclude: tuple[str, ...] = ()
 
@@ -89,6 +92,7 @@ def _build_config(raw: dict[str, object]) -> Config:
         r2_remote=_optional_str(raw, "r2_remote", ""),
         r2_bucket=_optional_str(raw, "r2_bucket", ""),
         overdue_hours=_optional_number(raw, "overdue_hours", _DEFAULT_OVERDUE_HOURS),
+        min_free_space_gb=_optional_number(raw, "min_free_space_gb", _DEFAULT_MIN_FREE_SPACE_GB),
         audit_images=tuple(_optional_str_list(raw, "audit_images", list(_DEFAULT_AUDIT_IMAGES))),
         exclude=tuple(_optional_str_list(raw, "exclude", [])),
     )

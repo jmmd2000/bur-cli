@@ -165,12 +165,14 @@ def _config(exclude: tuple[str, ...] = (), keep_last: int = 10) -> Config:
     )
 
 
-def test_defaults_come_from_the_container_and_the_config() -> None:
-    target = discovery.resolve(_container({"bur.enable": "true"}), _config(keep_last=7))
+def test_defaults_come_from_the_app_and_the_config() -> None:
+    labels = {"bur.enable": "true", "bur.app": "giftring"}
+
+    target = discovery.resolve(_container(labels), _config(keep_last=7))
 
     assert target.container == "giftring-db-1"
-    assert target.app == "giftring-db-1"
-    assert target.database == "giftring-db-1"
+    assert target.app == "giftring"
+    assert target.database == "giftring"
     assert target.user == "postgres"
     assert target.keep_last == 7
     assert target.schedule == "daily"
@@ -203,15 +205,25 @@ def test_a_traversing_app_name_is_rejected() -> None:
 
 
 def test_a_hostile_database_or_user_is_rejected() -> None:
-    with pytest.raises(InvalidLabel):
-        discovery.resolve(_container({"bur.database": "a; drop database x"}), _config())
-    with pytest.raises(InvalidLabel):
-        discovery.resolve(_container({"bur.user": "../root"}), _config())
+    hostile_database = {"bur.app": "giftring", "bur.database": "a; drop database x"}
+    with pytest.raises(InvalidLabel, match="bur.database"):
+        discovery.resolve(_container(hostile_database), _config())
+    hostile_user = {"bur.app": "giftring", "bur.user": "../root"}
+    with pytest.raises(InvalidLabel, match="bur.user"):
+        discovery.resolve(_container(hostile_user), _config())
 
 
-def test_a_container_name_that_is_not_a_valid_app_name_is_rejected() -> None:
-    with pytest.raises(InvalidLabel):
-        discovery.resolve(_container({}, name="MyApp.db"), _config())
+def test_bur_app_is_required() -> None:
+    with pytest.raises(InvalidLabel, match="bur.app is required"):
+        discovery.resolve(_container({"bur.enable": "true"}), _config())
+
+
+def test_a_container_name_in_exclude_excludes_a_labelled_database() -> None:
+    labels = {"bur.app": "giftring"}
+
+    target = discovery.resolve(_container(labels), _config(exclude=("giftring-db-1",)))
+
+    assert target.excluded is True
 
 
 def test_an_excluded_app_is_resolved_and_marked() -> None:
@@ -222,15 +234,10 @@ def test_an_excluded_app_is_resolved_and_marked() -> None:
 
 
 def test_a_bad_keep_last_is_rejected() -> None:
-    with pytest.raises(InvalidLabel):
-        discovery.resolve(_container({"bur.keep_last": "loads"}), _config())
-    with pytest.raises(InvalidLabel):
-        discovery.resolve(_container({"bur.keep_last": "0"}), _config())
-
-
-def test_the_old_retention_keep_label_names_its_replacement() -> None:
-    with pytest.raises(InvalidLabel, match="renamed to bur.keep_last"):
-        discovery.resolve(_container({"bur.retention.keep": "3"}), _config())
+    with pytest.raises(InvalidLabel, match="bur.keep_last"):
+        discovery.resolve(_container({"bur.app": "giftring", "bur.keep_last": "loads"}), _config())
+    with pytest.raises(InvalidLabel, match="bur.keep_last"):
+        discovery.resolve(_container({"bur.app": "giftring", "bur.keep_last": "0"}), _config())
 
 
 def test_discover_filters_on_the_enable_label(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -319,6 +326,41 @@ def test_one_bad_container_does_not_stop_the_others(
     assert [target.app for target in discovered.targets] == ["giftring"]
     assert [problem.container for problem in discovered.problems] == ["bad-db-1"]
     assert "bur.app" in discovered.problems[0].problem
+
+
+_SHARED_APP = json.dumps(
+    [
+        {
+            "Name": "/giftring-db-1",
+            "Config": {"Image": "postgres:16", "Labels": {"bur.app": "giftring"}},
+        },
+        {
+            "Name": "/giftring-old-db-1",
+            "Config": {"Image": "postgres:16", "Labels": {"bur.app": "giftring"}},
+        },
+    ]
+)
+
+
+def test_containers_sharing_an_app_are_all_problems(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_docker(monkeypatch, [], "a\nb\n", _SHARED_APP)
+
+    discovered = discovery.discover(_config())
+
+    assert discovered.targets == []
+    problems = {problem.container: problem.problem for problem in discovered.problems}
+    assert "giftring-old-db-1" in problems["giftring-db-1"]
+    assert "giftring-db-1" in problems["giftring-old-db-1"]
+
+
+def test_excluding_one_of_a_shared_app_leaves_the_other(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_docker(monkeypatch, [], "a\nb\n", _SHARED_APP)
+
+    discovered = discovery.discover(_config(exclude=("giftring-old-db-1",)))
+
+    assert discovered.problems == []
+    kept = {target.container: target.excluded for target in discovered.targets}
+    assert kept == {"giftring-db-1": False, "giftring-old-db-1": True}
 
 
 def _target() -> DBTarget:

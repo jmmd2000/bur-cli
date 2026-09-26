@@ -96,12 +96,6 @@ def test_boolean_is_not_accepted_as_integer(tmp_path: Path) -> None:
         load_config(_write(tmp_path, body))
 
 
-def test_the_old_retention_keep_key_is_rejected(tmp_path: Path) -> None:
-    body = 'backup_root = "/backups"\nage_recipients = ["age1abc"]\nretention_keep = 5'
-    with pytest.raises(ConfigError, match="unknown config field.*retention_keep"):
-        load_config(_write(tmp_path, body))
-
-
 def test_unknown_field_is_rejected(tmp_path: Path) -> None:
     body = 'backup_root = "/backups"\nage_recipients = ["age1abc"]\nbackup_roott = "/x"'
     with pytest.raises(ConfigError, match="unknown"):
@@ -129,10 +123,4 @@ def test_exclude_must_be_a_list_of_names(tmp_path: Path) -> None:
 def test_audit_images_must_be_a_list_of_non_empty_strings(tmp_path: Path, value: str) -> None:
     body = f'backup_root = "/backups"\nage_recipients = ["age1abc"]\naudit_images = {value}'
     with pytest.raises(ConfigError, match="audit_images must be a list of non-empty strings"):
-        load_config(_write(tmp_path, body))
-
-
-def test_the_old_postgres_image_match_key_is_rejected(tmp_path: Path) -> None:
-    body = 'backup_root = "/backups"\nage_recipients = ["age1abc"]\npostgres_image_match = "x"'
-    with pytest.raises(ConfigError, match="unknown config field.*postgres_image_match"):
         load_config(_write(tmp_path, body))

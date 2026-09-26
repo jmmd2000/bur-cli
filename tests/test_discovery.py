@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import subprocess
 from pathlib import Path
@@ -155,14 +156,11 @@ def _container(labels: dict[str, str], name: str = "giftring-db-1") -> Container
     return ContainerInfo(name=name, image="postgres:16", labels=labels)
 
 
-def _config(
-    exclude: tuple[str, ...] = (), keep_last: int = 10, image_match: str = "postgres"
-) -> Config:
+def _config(exclude: tuple[str, ...] = (), keep_last: int = 10) -> Config:
     return Config(
         backup_root=Path("/backups"),
         age_recipients=("age1abc",),
         keep_last=keep_last,
-        postgres_image_match=image_match,
         exclude=exclude,
     )
 
@@ -288,12 +286,13 @@ def test_audit_ignores_a_deliberate_opt_out(monkeypatch: pytest.MonkeyPatch) -> 
     assert "optedout-db-1" not in names
 
 
-def test_audit_uses_the_configured_image_match(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_audit_matches_any_of_the_configured_images(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_docker(monkeypatch, [], "a\nb\nc\nd\n", _MIXED)
+    config = dataclasses.replace(_config(), audit_images=("postgres", "jenkins"))
 
-    unlabelled = discovery.audit(_config(image_match="jenkins"))
+    unlabelled = discovery.audit(config)
 
-    assert [container.name for container in unlabelled] == ["jenkins"]
+    assert [container.name for container in unlabelled] == ["forgotten-db-1", "jenkins"]
 
 
 _ONE_BAD = json.dumps(

@@ -138,8 +138,9 @@ def audit(config: Config) -> list[ContainerInfo]:
 
     Containers named in the config's ``exclude`` list are skipped.
 
-    :param config: Loaded configuration, for ``postgres_image_match`` and ``exclude``
-    :returns: Containers whose image matches but which carry no ``bur.enable`` label
+    :param config: Loaded configuration, for ``audit_images`` and ``exclude``
+    :returns: Containers whose image matches ``audit_images`` but which carry no
+        ``bur.enable`` label
     :raises DiscoveryError: If docker could not be listed or inspected
     """
     return [
@@ -149,7 +150,7 @@ def audit(config: Config) -> list[ContainerInfo]:
 
 def _is_unlabelled_database(container: ContainerInfo, config: Config) -> bool:
     """Whether a container looks like a database that never opted in"""
-    if config.postgres_image_match not in container.image:
+    if not any(image in container.image for image in config.audit_images):
         return False
     if _ENABLE_LABEL in container.labels:
         return False

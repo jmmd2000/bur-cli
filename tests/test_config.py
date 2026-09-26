@@ -17,7 +17,7 @@ exclude = ["giftring", "scratch"]
 r2_remote = "r2"
 r2_bucket = "burr"
 overdue_hours = 12
-postgres_image_match = "postgres:16"
+audit_images = ["postgres:16", "mariadb"]
 """
 
 
@@ -35,7 +35,7 @@ def test_minimal_config_applies_defaults(tmp_path: Path) -> None:
     )
     assert config.keep_last == 10
     assert config.overdue_hours == 24.0
-    assert config.postgres_image_match == "postgres"
+    assert config.audit_images == ("postgres",)
     assert config.r2_remote == ""
 
 
@@ -46,7 +46,7 @@ def test_full_config_overrides_defaults(tmp_path: Path) -> None:
     assert config.age_recipients == ("age1abc", "age1def")
     assert config.r2_bucket == "burr"
     assert config.overdue_hours == 12.0
-    assert config.postgres_image_match == "postgres:16"
+    assert config.audit_images == ("postgres:16", "mariadb")
 
 
 def test_env_var_is_used_when_no_path_given(
@@ -123,3 +123,16 @@ def test_exclude_must_be_a_list_of_names(tmp_path: Path) -> None:
     with pytest.raises(ConfigError) as excinfo:
         load_config(_write(tmp_path, body))
     assert "exclude" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("value", ['"postgres"', '["postgres", ""]', "[5]"])
+def test_audit_images_must_be_a_list_of_non_empty_strings(tmp_path: Path, value: str) -> None:
+    body = f'backup_root = "/backups"\nage_recipients = ["age1abc"]\naudit_images = {value}'
+    with pytest.raises(ConfigError, match="audit_images must be a list of non-empty strings"):
+        load_config(_write(tmp_path, body))
+
+
+def test_the_old_postgres_image_match_key_is_rejected(tmp_path: Path) -> None:
+    body = 'backup_root = "/backups"\nage_recipients = ["age1abc"]\npostgres_image_match = "x"'
+    with pytest.raises(ConfigError, match="unknown config field.*postgres_image_match"):
+        load_config(_write(tmp_path, body))

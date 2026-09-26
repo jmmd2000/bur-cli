@@ -9,20 +9,20 @@ from pathlib import Path
 
 _CONFIG_ENV_VAR = "BUR_CONFIG"
 
-_DEFAULT_RETENTION_KEEP = 10
+_DEFAULT_KEEP_LAST = 10
 _DEFAULT_OVERDUE_HOURS = 24.0
-_DEFAULT_POSTGRES_IMAGE_MATCH = "postgres"
+_DEFAULT_AUDIT_IMAGES = ("postgres",)
 
 _KNOWN_KEYS = frozenset(
     {
         "backup_root",
-        "retention_keep",
+        "keep_last",
         "age_recipients",
         "exclude",
         "r2_remote",
         "r2_bucket",
         "overdue_hours",
-        "postgres_image_match",
+        "audit_images",
     }
 )
 
@@ -37,11 +37,11 @@ class Config:
 
     backup_root: Path
     age_recipients: tuple[str, ...]
-    retention_keep: int = _DEFAULT_RETENTION_KEEP
+    keep_last: int = _DEFAULT_KEEP_LAST
     r2_remote: str = ""
     r2_bucket: str = ""
     overdue_hours: float = _DEFAULT_OVERDUE_HOURS
-    postgres_image_match: str = _DEFAULT_POSTGRES_IMAGE_MATCH
+    audit_images: tuple[str, ...] = _DEFAULT_AUDIT_IMAGES
     exclude: tuple[str, ...] = ()
 
 
@@ -85,13 +85,11 @@ def _build_config(raw: dict[str, object]) -> Config:
     return Config(
         backup_root=Path(_require_str(raw, "backup_root")),
         age_recipients=tuple(age_recipients),
-        retention_keep=_optional_int(raw, "retention_keep", _DEFAULT_RETENTION_KEEP),
+        keep_last=_optional_int(raw, "keep_last", _DEFAULT_KEEP_LAST),
         r2_remote=_optional_str(raw, "r2_remote", ""),
         r2_bucket=_optional_str(raw, "r2_bucket", ""),
         overdue_hours=_optional_number(raw, "overdue_hours", _DEFAULT_OVERDUE_HOURS),
-        postgres_image_match=_optional_str(
-            raw, "postgres_image_match", _DEFAULT_POSTGRES_IMAGE_MATCH
-        ),
+        audit_images=tuple(_optional_str_list(raw, "audit_images", list(_DEFAULT_AUDIT_IMAGES))),
         exclude=tuple(_optional_str_list(raw, "exclude", [])),
     )
 

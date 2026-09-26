@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import subprocess
 from pathlib import Path
@@ -155,24 +156,23 @@ def _container(labels: dict[str, str], name: str = "giftring-db-1") -> Container
     return ContainerInfo(name=name, image="postgres:16", labels=labels)
 
 
-def _config(exclude: tuple[str, ...] = (), keep: int = 10, image_match: str = "postgres") -> Config:
+def _config(exclude: tuple[str, ...] = (), keep_last: int = 10) -> Config:
     return Config(
         backup_root=Path("/backups"),
         age_recipients=("age1abc",),
-        retention_keep=keep,
-        postgres_image_match=image_match,
+        keep_last=keep_last,
         exclude=exclude,
     )
 
 
 def test_defaults_come_from_the_container_and_the_config() -> None:
-    target = discovery.resolve(_container({"bur.enable": "true"}), _config(keep=7))
+    target = discovery.resolve(_container({"bur.enable": "true"}), _config(keep_last=7))
 
     assert target.container == "giftring-db-1"
     assert target.app == "giftring-db-1"
     assert target.database == "giftring-db-1"
     assert target.user == "postgres"
-    assert target.retention_keep == 7
+    assert target.keep_last == 7
     assert target.schedule == "daily"
     assert target.excluded is False
 
@@ -183,7 +183,7 @@ def test_labels_override_the_defaults() -> None:
         "bur.app": "giftring",
         "bur.database": "gift",
         "bur.user": "gift_owner",
-        "bur.retention.keep": "3",
+        "bur.keep_last": "3",
         "bur.schedule": "weekly",
     }
 
@@ -192,7 +192,7 @@ def test_labels_override_the_defaults() -> None:
     assert target.app == "giftring"
     assert target.database == "gift"
     assert target.user == "gift_owner"
-    assert target.retention_keep == 3
+    assert target.keep_last == 3
     assert target.schedule == "weekly"
 
 
@@ -221,11 +221,16 @@ def test_an_excluded_app_is_resolved_and_marked() -> None:
     assert target.excluded is True
 
 
-def test_a_bad_retention_keep_is_rejected() -> None:
+def test_a_bad_keep_last_is_rejected() -> None:
     with pytest.raises(InvalidLabel):
-        discovery.resolve(_container({"bur.retention.keep": "loads"}), _config())
+        discovery.resolve(_container({"bur.keep_last": "loads"}), _config())
     with pytest.raises(InvalidLabel):
-        discovery.resolve(_container({"bur.retention.keep": "0"}), _config())
+        discovery.resolve(_container({"bur.keep_last": "0"}), _config())
+
+
+def test_the_old_retention_keep_label_names_its_replacement() -> None:
+    with pytest.raises(InvalidLabel, match="renamed to bur.keep_last"):
+        discovery.resolve(_container({"bur.retention.keep": "3"}), _config())
 
 
 def test_discover_filters_on_the_enable_label(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -281,12 +286,13 @@ def test_audit_ignores_a_deliberate_opt_out(monkeypatch: pytest.MonkeyPatch) -> 
     assert "optedout-db-1" not in names
 
 
-def test_audit_uses_the_configured_image_match(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_audit_matches_any_of_the_configured_images(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_docker(monkeypatch, [], "a\nb\nc\nd\n", _MIXED)
+    config = dataclasses.replace(_config(), audit_images=("postgres", "jenkins"))
 
-    unlabelled = discovery.audit(_config(image_match="jenkins"))
+    unlabelled = discovery.audit(config)
 
-    assert [container.name for container in unlabelled] == ["jenkins"]
+    assert [container.name for container in unlabelled] == ["forgotten-db-1", "jenkins"]
 
 
 _ONE_BAD = json.dumps(
@@ -321,7 +327,7 @@ def _target() -> DBTarget:
         app="giftring",
         database="gift",
         user="gift_owner",
-        retention_keep=10,
+        keep_last=10,
         schedule="daily",
         excluded=False,
     )

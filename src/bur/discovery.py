@@ -88,11 +88,30 @@ def inspect_running(label_filter: str | None = None) -> list[ContainerInfo]:
         return []
 
     inspected = subprocess.run(["docker", "inspect", *ids], capture_output=True, text=True)
-    if inspected.returncode != 0:
-        raise DiscoveryError(f"could not inspect containers: {inspected.stderr.strip()}")
+    if inspected.returncode == 0:
+        entries: list[dict[str, object]] = json.loads(inspected.stdout)
+        return [_read_container(entry) for entry in entries]
 
-    entries: list[dict[str, object]] = json.loads(inspected.stdout)
-    return [_read_container(entry) for entry in entries]
+    containers: list[ContainerInfo] = []
+    for container_id in ids:
+        container = _inspect_one(container_id)
+        if container is not None:
+            containers.append(container)
+    return containers
+
+
+def _inspect_one(container_id: str) -> ContainerInfo | None:
+    """Inspect one container, or return None if it no longer exists
+
+    :raises DiscoveryError: If docker fails for any other reason
+    """
+    inspected = subprocess.run(["docker", "inspect", container_id], capture_output=True, text=True)
+    if inspected.returncode == 0:
+        entries: list[dict[str, object]] = json.loads(inspected.stdout)
+        return _read_container(entries[0])
+    if "no such object" in inspected.stderr.lower():
+        return None
+    raise DiscoveryError(f"could not inspect {container_id}: {inspected.stderr.strip()}")
 
 
 def discover(config: Config) -> Discovered:

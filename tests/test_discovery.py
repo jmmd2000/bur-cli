@@ -102,6 +102,55 @@ def test_a_docker_failure_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "docker daemon" in str(excinfo.value)
 
 
+def _inspect_body(name: str) -> str:
+    return json.dumps([{"Name": f"/{name}", "Config": {"Image": "postgres:16", "Labels": {}}}])
+
+
+@pytest.mark.parametrize(
+    "missing_error",
+    ["error: no such object: gone456", "Error: No such object: gone456"],
+)
+def test_a_container_removed_before_inspect_is_skipped(
+    monkeypatch: pytest.MonkeyPatch, missing_error: str
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> _FakeResult:
+        calls.append(command)
+        if command[:2] == ["docker", "ps"]:
+            return _FakeResult(stdout="kept123\ngone456\n")
+        if command == ["docker", "inspect", "kept123"]:
+            return _FakeResult(stdout=_inspect_body("kept-db-1"))
+        if command == ["docker", "inspect", "gone456"]:
+            return _FakeResult(returncode=1, stderr=missing_error)
+        return _FakeResult(returncode=1, stdout=_inspect_body("kept-db-1"), stderr=missing_error)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    containers = discovery.inspect_running()
+
+    assert [container.name for container in containers] == ["kept-db-1"]
+    assert ["docker", "inspect", "kept123"] in calls
+    assert ["docker", "inspect", "gone456"] in calls
+
+
+def test_an_inspect_failure_that_is_not_a_missing_container_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    denied = "permission denied while trying to connect to the docker daemon socket"
+
+    def fake_run(command: list[str], **kwargs: object) -> _FakeResult:
+        if command[:2] == ["docker", "ps"]:
+            return _FakeResult(stdout="abc123\n")
+        return _FakeResult(returncode=1, stderr=denied)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(DiscoveryError) as excinfo:
+        discovery.inspect_running()
+    assert "permission denied" in str(excinfo.value)
+
+
 def _container(labels: dict[str, str], name: str = "giftring-db-1") -> ContainerInfo:
     return ContainerInfo(name=name, image="postgres:16", labels=labels)
 

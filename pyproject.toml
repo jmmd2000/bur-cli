@@ -4,7 +4,7 @@ version = "0.8.0"
 description = "Back up and restore dockerised Postgres databases, encrypted and pushed to Cloudflare R2"
 readme = "README.md"
 authors = [
-    { name = "James Doyle", email = "jamesmddoyle@gmail.com" }
+    { name = "James Doyle" }
 ]
 requires-python = ">=3.12"
 dependencies = [

@@ -155,24 +155,26 @@ def _container(labels: dict[str, str], name: str = "giftring-db-1") -> Container
     return ContainerInfo(name=name, image="postgres:16", labels=labels)
 
 
-def _config(exclude: tuple[str, ...] = (), keep: int = 10, image_match: str = "postgres") -> Config:
+def _config(
+    exclude: tuple[str, ...] = (), keep_last: int = 10, image_match: str = "postgres"
+) -> Config:
     return Config(
         backup_root=Path("/backups"),
         age_recipients=("age1abc",),
-        retention_keep=keep,
+        keep_last=keep_last,
         postgres_image_match=image_match,
         exclude=exclude,
     )
 
 
 def test_defaults_come_from_the_container_and_the_config() -> None:
-    target = discovery.resolve(_container({"bur.enable": "true"}), _config(keep=7))
+    target = discovery.resolve(_container({"bur.enable": "true"}), _config(keep_last=7))
 
     assert target.container == "giftring-db-1"
     assert target.app == "giftring-db-1"
     assert target.database == "giftring-db-1"
     assert target.user == "postgres"
-    assert target.retention_keep == 7
+    assert target.keep_last == 7
     assert target.schedule == "daily"
     assert target.excluded is False
 
@@ -183,7 +185,7 @@ def test_labels_override_the_defaults() -> None:
         "bur.app": "giftring",
         "bur.database": "gift",
         "bur.user": "gift_owner",
-        "bur.retention.keep": "3",
+        "bur.keep_last": "3",
         "bur.schedule": "weekly",
     }
 
@@ -192,7 +194,7 @@ def test_labels_override_the_defaults() -> None:
     assert target.app == "giftring"
     assert target.database == "gift"
     assert target.user == "gift_owner"
-    assert target.retention_keep == 3
+    assert target.keep_last == 3
     assert target.schedule == "weekly"
 
 
@@ -221,11 +223,16 @@ def test_an_excluded_app_is_resolved_and_marked() -> None:
     assert target.excluded is True
 
 
-def test_a_bad_retention_keep_is_rejected() -> None:
+def test_a_bad_keep_last_is_rejected() -> None:
     with pytest.raises(InvalidLabel):
-        discovery.resolve(_container({"bur.retention.keep": "loads"}), _config())
+        discovery.resolve(_container({"bur.keep_last": "loads"}), _config())
     with pytest.raises(InvalidLabel):
-        discovery.resolve(_container({"bur.retention.keep": "0"}), _config())
+        discovery.resolve(_container({"bur.keep_last": "0"}), _config())
+
+
+def test_the_old_retention_keep_label_names_its_replacement() -> None:
+    with pytest.raises(InvalidLabel, match="renamed to bur.keep_last"):
+        discovery.resolve(_container({"bur.retention.keep": "3"}), _config())
 
 
 def test_discover_filters_on_the_enable_label(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -321,7 +328,7 @@ def _target() -> DBTarget:
         app="giftring",
         database="gift",
         user="gift_owner",
-        retention_keep=10,
+        keep_last=10,
         schedule="daily",
         excluded=False,
     )

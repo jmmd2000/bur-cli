@@ -11,7 +11,7 @@ age_recipients = ["age1abc"]
 
 _FULL = """
 backup_root = "/srv/backups"
-retention_keep = 5
+keep_last = 5
 age_recipients = ["age1abc", "age1def"]
 exclude = ["giftring", "scratch"]
 r2_remote = "r2"
@@ -33,7 +33,7 @@ def test_minimal_config_applies_defaults(tmp_path: Path) -> None:
         backup_root=Path("/backups"),
         age_recipients=("age1abc",),
     )
-    assert config.retention_keep == 10
+    assert config.keep_last == 10
     assert config.overdue_hours == 24.0
     assert config.postgres_image_match == "postgres"
     assert config.r2_remote == ""
@@ -42,7 +42,7 @@ def test_minimal_config_applies_defaults(tmp_path: Path) -> None:
 def test_full_config_overrides_defaults(tmp_path: Path) -> None:
     config = load_config(_write(tmp_path, _FULL))
     assert config.backup_root == Path("/srv/backups")
-    assert config.retention_keep == 5
+    assert config.keep_last == 5
     assert config.age_recipients == ("age1abc", "age1def")
     assert config.r2_bucket == "burr"
     assert config.overdue_hours == 12.0
@@ -85,14 +85,20 @@ def test_empty_age_recipients_is_rejected(tmp_path: Path) -> None:
 
 
 def test_wrong_type_errors_by_name(tmp_path: Path) -> None:
-    body = 'backup_root = "/backups"\nage_recipients = ["age1abc"]\nretention_keep = "ten"'
-    with pytest.raises(ConfigError, match="retention_keep"):
+    body = 'backup_root = "/backups"\nage_recipients = ["age1abc"]\nkeep_last = "ten"'
+    with pytest.raises(ConfigError, match="keep_last"):
         load_config(_write(tmp_path, body))
 
 
 def test_boolean_is_not_accepted_as_integer(tmp_path: Path) -> None:
-    body = 'backup_root = "/backups"\nage_recipients = ["age1abc"]\nretention_keep = true'
-    with pytest.raises(ConfigError, match="retention_keep"):
+    body = 'backup_root = "/backups"\nage_recipients = ["age1abc"]\nkeep_last = true'
+    with pytest.raises(ConfigError, match="keep_last"):
+        load_config(_write(tmp_path, body))
+
+
+def test_the_old_retention_keep_key_is_rejected(tmp_path: Path) -> None:
+    body = 'backup_root = "/backups"\nage_recipients = ["age1abc"]\nretention_keep = 5'
+    with pytest.raises(ConfigError, match="unknown config field.*retention_keep"):
         load_config(_write(tmp_path, body))
 
 

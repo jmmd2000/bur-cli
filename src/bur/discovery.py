@@ -47,7 +47,7 @@ class DBTarget:
     app: str
     database: str
     user: str
-    retention_keep: int
+    keep_last: int
     schedule: str
     excluded: bool
 
@@ -176,7 +176,7 @@ def resolve(container: ContainerInfo, config: Config) -> DBTarget:
     :param container: A running container with ```bur.*`` labels
     :param config: Loaded config
     :returns: The resolved target
-    :raises InvalidLabel: If a name or retention value is not usable
+    :raises InvalidLabel: If a name or ``bur.keep_last`` value is not usable
     """
     labels = container.labels
     app = _name(labels.get("bur.app", container.name), "bur.app")
@@ -188,7 +188,7 @@ def resolve(container: ContainerInfo, config: Config) -> DBTarget:
         app=app,
         database=database,
         user=user,
-        retention_keep=_keep(labels, config.retention_keep),
+        keep_last=_keep_last(labels, config.keep_last),
         schedule=labels.get("bur.schedule", _DEFAULT_SCHEDULE),
         excluded=app in config.exclude,
     )
@@ -201,18 +201,20 @@ def _name(value: str, label: str) -> str:
     return value
 
 
-def _keep(labels: dict[str, str], default: int) -> int:
-    """Read ``bur.retention.keep``, falling back to the global default"""
-    raw = labels.get("bur.retention.keep")
+def _keep_last(labels: dict[str, str], default: int) -> int:
+    """Read ``bur.keep_last``, falling back to the global default"""
+    if "bur.retention.keep" in labels:
+        raise InvalidLabel("bur.retention.keep has been renamed to bur.keep_last")
+    raw = labels.get("bur.keep_last")
     if raw is None:
         return default
     try:
-        keep = int(raw)
+        keep_last = int(raw)
     except ValueError as error:
-        raise InvalidLabel(f"bur.retention.keep must be a number, got {raw!r}") from error
-    if keep < 1:
-        raise InvalidLabel(f"bur.retention.keep must be at least 1, got {keep}")
-    return keep
+        raise InvalidLabel(f"bur.keep_last must be a number, got {raw!r}") from error
+    if keep_last < 1:
+        raise InvalidLabel(f"bur.keep_last must be at least 1, got {keep_last}")
+    return keep_last
 
 
 def _read_container(entry: dict[str, object]) -> ContainerInfo:

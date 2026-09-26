@@ -165,7 +165,7 @@ def dbs(
         marker = "  (excluded)" if target.excluded else ""
         typer.echo(
             f"{target.app:<22} {target.container:<28} {target.database:<18} "
-            f"{target.user:<16} {target.retention_keep:<6} {target.schedule}{marker}"
+            f"{target.user:<16} {target.keep_last:<6} {target.schedule}{marker}"
         )
 
     for problem in discovered.problems:

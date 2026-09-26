@@ -267,7 +267,7 @@ def _target(app_name: str = "giftring", excluded: bool = False) -> DBTarget:
         app=app_name,
         database="gift",
         user="gift_owner",
-        retention_keep=3,
+        keep_last=3,
         schedule="weekly",
         excluded=excluded,
     )

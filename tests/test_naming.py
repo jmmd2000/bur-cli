@@ -27,6 +27,15 @@ def test_globals_kind_round_trips() -> None:
     assert parse(name).kind == "globals"
 
 
+def test_manifest_kind_round_trips() -> None:
+    when = datetime(2026, 6, 3, 17, 48, 0, tzinfo=UTC)
+    name = build("album-reviews", when, kind="manifest")
+    assert name == "album-reviews-20260603T174800Z.manifest.json"
+    parsed = parse(name)
+    assert parsed.kind == "manifest"
+    assert parsed.app == "album-reviews"
+
+
 def test_non_utc_timestamp_is_normalised_to_utc() -> None:
     eastern = timezone(timedelta(hours=-5))
     when = datetime(2026, 6, 3, 12, 48, 0, tzinfo=eastern)

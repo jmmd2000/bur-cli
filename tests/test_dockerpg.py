@@ -121,7 +121,8 @@ def test_table_names_lists_the_user_tables(popen_calls: list[_FakePopen]) -> Non
     dockerpg.table_names("app-db", "app", "appuser")
     call = popen_calls[-1]
     inner = call.args[-1]
-    assert "FROM pg_stat_user_tables ORDER BY 1" in inner
+    assert "FROM pg_stat_user_tables" in inner
+    assert "NOT LIKE '\"'\"'pg\\_temp\\_%'\"'\"'" in inner
     assert "quote_ident" in inner
     assert inner.endswith("-U appuser -d app")
     assert call.kwargs["stdout"] is subprocess.PIPE

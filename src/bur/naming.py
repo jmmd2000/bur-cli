@@ -1,9 +1,10 @@
 """Filename helpers for backups.
 
-A backup run writes two artefacts that share one timestamp:
+A backup run writes three files that share one timestamp:
 
 <app>-<YYYYMMDDThhmmssZ>.dump.age
 <app>-<YYYYMMDDThhmmssZ>.globals.sql.age
+<app>-<YYYYMMDDThhmmssZ>.manifest.json
 
 The timestamp is ISO 8601 *basic* format in UTC, so the names sort lexically in chronological order.
 App names could contain hyphens so the parsing uses the timestamp pattern rather than the hyphen.
@@ -16,22 +17,25 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
-ArtefactKind = Literal["dump", "globals"]
+ArtefactKind = Literal["dump", "globals", "manifest"]
 
 _TIMESTAMP_FORMAT = "%Y%m%dT%H%M%SZ"
 
 _SUFFIXES: dict[ArtefactKind, str] = {
     "dump": ".dump.age",
     "globals": ".globals.sql.age",
+    "manifest": ".manifest.json",
 }
 
 _SUFFIX_TO_KIND: dict[str, ArtefactKind] = {
-    "dump": "dump",
-    "globals.sql": "globals",
+    "dump.age": "dump",
+    "globals.sql.age": "globals",
+    "manifest.json": "manifest",
 }
 
 _NAME_PATTERN = re.compile(
-    r"^(?P<app>.+)-(?P<timestamp>\d{8}T\d{6}Z)\.(?P<suffix>dump|globals\.sql)\.age$"
+    r"^(?P<app>.+)-(?P<timestamp>\d{8}T\d{6}Z)"
+    r"\.(?P<suffix>dump\.age|globals\.sql\.age|manifest\.json)$"
 )
 
 
@@ -53,16 +57,13 @@ def build(app: str, when: datetime, kind: ArtefactKind = "dump") -> str:
 
     :param app: Application name
     :param when: Run timestamp, timezone-aware, normalised to UTC
-    :param kind: Which artefact to name, ``"dump"`` or ``"globals"``
+    :param kind: Which artefact to name, ``"dump"``, ``"globals"`` or ``"manifest"``
     :returns: The artefact filename
     :raises ValueError: if ``app`` is empty or ``when`` is not UTC
     """
     if not app:
         raise ValueError("app name must not be empty")
-    if when.tzinfo is None:
-        raise ValueError("timestamp must be timezone-aware")
-    stamp = when.astimezone(UTC).strftime(_TIMESTAMP_FORMAT)
-    return f"{app}-{stamp}{_SUFFIXES[kind]}"
+    return f"{app}-{format_timestamp(when)}{_SUFFIXES[kind]}"
 
 
 def parse(name: str) -> ParsedName:
@@ -78,6 +79,18 @@ def parse(name: str) -> ParsedName:
     timestamp = datetime.strptime(match["timestamp"], _TIMESTAMP_FORMAT).replace(tzinfo=UTC)
 
     return ParsedName(app=match["app"], timestamp=timestamp, kind=_SUFFIX_TO_KIND[match["suffix"]])
+
+
+def format_timestamp(when: datetime) -> str:
+    """Format a run timestamp the way filenames carry it
+
+    :param when: Run timestamp, timezone-aware, normalised to UTC
+    :returns: The timestamp text, e.g. ``20260603T174800Z``
+    :raises ValueError: If ``when`` is not timezone-aware
+    """
+    if when.tzinfo is None:
+        raise ValueError("timestamp must be timezone-aware")
+    return when.astimezone(UTC).strftime(_TIMESTAMP_FORMAT)
 
 
 def parse_timestamp(text: str) -> datetime:

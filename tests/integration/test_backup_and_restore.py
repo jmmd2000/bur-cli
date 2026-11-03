@@ -88,6 +88,16 @@ def test_backup_then_drill_round_trips(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+def test_a_drill_without_a_major_uses_the_recorded_one(tmp_path: Path) -> None:
+    config, identity = _take_backup(tmp_path)
+
+    result = runner.restore_drill(config, _APP, str(identity), None, _APP)
+
+    assert result.major == _MAJOR
+    assert result.row_counts == {"public.widgets": 25}
+
+
+@pytest.mark.integration
 def test_a_failed_drill_still_removes_its_container(tmp_path: Path) -> None:
     config, _ = _take_backup(tmp_path)
     wrong_identity = tmp_path / "wrong.txt"

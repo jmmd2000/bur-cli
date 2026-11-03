@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -8,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from bur import crypto, dockerpg, processes, runner, storage
+from bur import crypto, dockerpg, manifest, processes, runner, storage
 from bur.config import Config
 from bur.dockerpg import DockerCommandError
 from bur.naming import ArtefactKind, build
@@ -64,6 +65,18 @@ def _decrypt(path: Path, identity: Path) -> bytes:
     return data
 
 
+def _patch_source_queries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fake the version and table queries a backup runs against its source."""
+    monkeypatch.setattr(dockerpg, "server_version", lambda c, d, u: _shell("echo 160004"))
+    monkeypatch.setattr(
+        dockerpg, "table_names", lambda c, d, u: _shell("printf 'public.a\\npublic.b\\n'")
+    )
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def test_backup_writes_both_artefacts(
     keypair: tuple[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -76,6 +89,7 @@ def test_backup_writes_both_artefacts(
 
     monkeypatch.setattr(dockerpg, "database_size", lambda c, d, u: _shell("echo 4096"))
     monkeypatch.setattr(storage, "free_space", lambda r: _PLENTY_OF_SPACE)
+    _patch_source_queries(monkeypatch)
     monkeypatch.setattr(dockerpg, "dump", lambda c, d, u: _emitting(dump_bytes, tmp_path, "dump"))
     monkeypatch.setattr(
         dockerpg, "dump_globals", lambda c, u: _emitting(globals_bytes, tmp_path, "globals")
@@ -94,6 +108,40 @@ def test_backup_writes_both_artefacts(
     assert _decrypt(globals_path, identity) == globals_bytes
     assert result.database_size == 4096
     assert result.dry_run is False
+
+
+def test_backup_writes_a_manifest_that_matches_the_stored_files(
+    keypair: tuple[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recipient, _ = keypair
+    root = tmp_path / "backups"
+    when = datetime(2026, 6, 3, 17, 48, tzinfo=UTC)
+
+    monkeypatch.setattr(dockerpg, "database_size", lambda c, d, u: _shell("echo 4096"))
+    monkeypatch.setattr(storage, "free_space", lambda r: _PLENTY_OF_SPACE)
+    monkeypatch.setattr(dockerpg, "dump", lambda c, d, u: _emitting(b"dump", tmp_path, "dump"))
+    monkeypatch.setattr(
+        dockerpg, "dump_globals", lambda c, u: _emitting(b"globals", tmp_path, "globals")
+    )
+    _patch_source_queries(monkeypatch)
+
+    result = runner.backup_database(
+        _config(root, recipient), "giftring", "giftring-db", "gift", "gift", now=when
+    )
+
+    app_dir = root / "giftring"
+    recorded = manifest.read(root, "giftring", result.manifest_name)
+    assert recorded.app == "giftring"
+    assert recorded.timestamp == when
+    assert recorded.postgres_major == 16
+    assert recorded.globals.file == result.globals_name
+    assert recorded.globals.sha256 == _sha256(app_dir / result.globals_name)
+    assert recorded.globals.size == (app_dir / result.globals_name).stat().st_size
+    dump = recorded.databases["gift"].dump
+    assert dump.file == result.dump_name
+    assert dump.sha256 == _sha256(app_dir / result.dump_name)
+    assert dump.size == (app_dir / result.dump_name).stat().st_size
+    assert recorded.databases["gift"].table_count == 2
 
 
 def test_backup_aborts_loudly_when_short_on_space(
@@ -197,6 +245,7 @@ def test_truncated_dump_fails_and_leaves_no_file(
     monkeypatch.setattr(dockerpg, "database_size", lambda c, d, u: _shell("echo 4096"))
     monkeypatch.setattr(storage, "free_space", lambda r: _PLENTY_OF_SPACE)
     monkeypatch.setattr(dockerpg, "dump", lambda c, d, u: _shell("printf partial; exit 1"))
+    _patch_source_queries(monkeypatch)
 
     with pytest.raises(crypto.CryptoError):
         runner.backup_database(config, "app", "app", "app", "app", now=when)
@@ -218,8 +267,9 @@ def _store_pair(
     recipient: str,
     tmp_path: Path,
     dump: bytes = b"pretend custom format dump",
+    table_count: int = 1,
 ) -> None:
-    """Write a real encrypted dump and globals pair for an app."""
+    """Write a real encrypted dump and globals pair for an app, then its manifest."""
     payloads: tuple[tuple[ArtefactKind, bytes], ...] = (
         ("dump", dump),
         ("globals", b"-- roles and grants"),
@@ -227,6 +277,22 @@ def _store_pair(
     for kind, payload in payloads:
         with storage.atomic_write(root, app, build(app, when, kind)) as out:
             crypto.encrypt(_emitting(payload, tmp_path, kind), [recipient], out)
+
+    manifest.write(
+        root,
+        manifest.Manifest(
+            app=app,
+            timestamp=when,
+            postgres_major=17,
+            globals=manifest.record_artefact(root, app, build(app, when, "globals")),
+            databases={
+                app: manifest.DatabaseRecord(
+                    dump=manifest.record_artefact(root, app, build(app, when, "dump")),
+                    table_count=table_count,
+                )
+            },
+        ),
+    )
 
 
 def _patch_drill(
@@ -282,6 +348,40 @@ def test_drill_restores_globals_then_the_dump(
     assert events == ["start postgres:16", "globals", "dump", "remove"]
     assert result.row_counts == {"public.widgets": 100}
     assert result.timestamp == when
+
+
+def test_drill_defaults_to_the_recorded_major(
+    keypair: tuple[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recipient, identity = keypair
+    root = tmp_path / "backups"
+    _store_pair(root, "giftring", datetime(2026, 6, 3, tzinfo=UTC), recipient, tmp_path)
+
+    events: list[str] = []
+    _patch_drill(monkeypatch, events, ["public.widgets"], 100)
+
+    result = runner.restore_drill(
+        _config(root, recipient), "giftring", str(identity), None, "giftring"
+    )
+
+    assert events[0] == "start postgres:17"
+    assert result.major == "17"
+
+
+def test_drill_fails_when_the_table_count_differs_from_the_manifest(
+    keypair: tuple[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recipient, identity = keypair
+    root = tmp_path / "backups"
+    when = datetime(2026, 6, 3, tzinfo=UTC)
+    _store_pair(root, "giftring", when, recipient, tmp_path, table_count=3)
+
+    events: list[str] = []
+    _patch_drill(monkeypatch, events, ["public.widgets", "public.orders"], 100)
+
+    with pytest.raises(DrillError, match="manifest"):
+        runner.restore_drill(_config(root, recipient), "giftring", str(identity), "16", "giftring")
+    assert events[-1] == "remove"
 
 
 def test_drill_drills_a_specific_backup(

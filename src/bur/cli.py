@@ -14,6 +14,7 @@ from bur.container import ContainerError
 from bur.crypto import CryptoError
 from bur.discovery import DiscoveryError
 from bur.dockerpg import DockerCommandError
+from bur.manifest import ManifestError
 from bur.naming import InvalidBackupName, parse_timestamp
 from bur.runner import BackupError, DrillError
 from bur.storage import BackupNotFound
@@ -66,7 +67,7 @@ def backup(
         raise typer.Exit(code=1) from error
 
     verb = "would write" if result.dry_run else "wrote"
-    typer.echo(f"{verb} {result.dump_name} and {result.globals_name}")
+    typer.echo(f"{verb} {result.dump_name}, {result.globals_name} and {result.manifest_name}")
 
 
 @app.command()
@@ -76,8 +77,13 @@ def restore(
     ],
     identity: Annotated[Path, typer.Option("--identity", help="Path to the age identity file")],
     major: Annotated[
-        str, typer.Option("--major", help="Postgres major version for the throwaway container")
-    ],
+        str | None,
+        typer.Option(
+            "--major",
+            help="Postgres major version for the throwaway container, "
+            "defaults to the version the backup was taken from",
+        ),
+    ] = None,
     drill: Annotated[
         bool, typer.Option("--drill", help="Restore into a throwaway container and check it")
     ] = False,
@@ -129,11 +135,12 @@ def restore(
         CryptoError,
         DockerCommandError,
         DrillError,
+        ManifestError,
     ) as error:
         typer.secho(f"drill failed: {error}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from error
 
-    typer.echo(f"restored {result.dump_name} into a throwaway postgres:{major}")
+    typer.echo(f"restored {result.dump_name} into a throwaway postgres:{result.major}")
     for table, rows in result.row_counts.items():
         typer.echo(f"  {table}: {rows} rows")
 

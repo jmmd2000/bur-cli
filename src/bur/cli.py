@@ -15,7 +15,7 @@ from bur.crypto import CryptoError
 from bur.discovery import DBTarget, DiscoveryError, LabelProblem
 from bur.dockerpg import DockerCommandError
 from bur.manifest import ManifestError
-from bur.naming import InvalidBackupName, parse_timestamp
+from bur.naming import InvalidBackupName, format_timestamp, parse_timestamp
 from bur.runner import BackupError, DrillError
 from bur.storage import BackupNotFound
 
@@ -96,9 +96,9 @@ def _check_only_target(only: str, targets: list[DBTarget], problems: list[LabelP
 
 
 def _back_up_target(config: Config, target: DBTarget, dry_run: bool) -> bool:
-    """Back up one database and print the outcome
+    """Back up one database, prune its old runs, and print the outcome
 
-    :returns: True if the backup succeeded
+    :returns: True if the backup and the prune both succeeded
     """
     try:
         result = runner.backup_database(
@@ -112,6 +112,22 @@ def _back_up_target(config: Config, target: DBTarget, dry_run: bool) -> bool:
     typer.echo(
         f"{target.app}: {verb} {result.dump_name}, {result.globals_name} and {result.manifest_name}"
     )
+
+    try:
+        pruned = runner.prune(
+            config, target.app, target.keep_last, result.timestamp, dry_run=dry_run
+        )
+    except OSError as error:
+        typer.secho(
+            f"{target.app}: backed up, but the prune failed, {error}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        return False
+
+    verb = "would prune" if dry_run else "pruned"
+    for run in pruned:
+        typer.echo(f"{target.app}: {verb} the backup from {format_timestamp(run.timestamp)}")
     return True
 
 

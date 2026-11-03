@@ -9,7 +9,7 @@ from typing import Annotated
 
 import typer
 
-from bur import discovery, health, runner
+from bur import discovery, health, remote, runner
 from bur.config import Config, ConfigError, load_config
 from bur.container import ContainerError
 from bur.crypto import CryptoError
@@ -17,6 +17,7 @@ from bur.discovery import DBTarget, DiscoveryError, LabelProblem
 from bur.dockerpg import DockerCommandError
 from bur.manifest import ManifestError
 from bur.naming import InvalidBackupName, format_timestamp, parse_timestamp
+from bur.remote import RemoteError
 from bur.runner import BackupError, DrillError
 from bur.status import (
     DatabaseStatus,
@@ -89,6 +90,8 @@ def backup(
             typer.echo(f"{target.app}: excluded, skipped")
             continue
         if due and not _is_due(config, target, now):
+            if not dry_run and not _upload_new_runs(config, target.app):
+                failures += 1
             continue
         if not _back_up_target(config, target, dry_run):
             failures += 1
@@ -121,9 +124,12 @@ def _is_due(config: Config, target: DBTarget, now: datetime) -> bool:
 
 
 def _back_up_target(config: Config, target: DBTarget, dry_run: bool) -> bool:
-    """Back up one database, prune its old runs, and print the outcome
+    """Back up one database, upload it, prune its old runs, and print the outcome
 
-    :returns: True if the backup and the prune both succeeded
+    The prune is skipped when the upload fails, so a run that never reached the
+    remote is never pruned.
+
+    :returns: True if the backup, the upload and the prune all succeeded
     """
     try:
         result = runner.backup_database(
@@ -137,6 +143,9 @@ def _back_up_target(config: Config, target: DBTarget, dry_run: bool) -> bool:
     typer.echo(
         f"{target.app}: {verb} {result.dump_name}, {result.globals_name} and {result.manifest_name}"
     )
+
+    if not dry_run and not _upload_new_runs(config, target.app):
+        return False
 
     try:
         pruned = runner.prune(
@@ -153,6 +162,24 @@ def _back_up_target(config: Config, target: DBTarget, dry_run: bool) -> bool:
     verb = "would prune" if dry_run else "pruned"
     for run in pruned:
         typer.echo(f"{target.app}: {verb} the backup from {format_timestamp(run.timestamp)}")
+    return True
+
+
+def _upload_new_runs(config: Config, app_name: str) -> bool:
+    """Upload an app's new runs to the remote, if one is configured, and print the outcome
+
+    :returns: True if the upload succeeded or no remote is configured
+    """
+    if not remote.is_configured(config):
+        return True
+    try:
+        uploaded = runner.upload_new_runs(config, app_name)
+    except (RemoteError, OSError) as error:
+        typer.secho(f"{app_name}: upload to R2 failed, {error}", fg=typer.colors.RED, err=True)
+        return False
+
+    for run in uploaded:
+        typer.echo(f"{app_name}: uploaded the backup from {format_timestamp(run.timestamp)} to R2")
     return True
 
 

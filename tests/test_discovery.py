@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import subprocess
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -176,6 +177,7 @@ def test_defaults_come_from_the_app_and_the_config() -> None:
     assert target.user == "postgres"
     assert target.keep_last == 7
     assert target.schedule == "daily"
+    assert target.interval == timedelta(days=1)
     assert target.excluded is False
 
 
@@ -196,6 +198,33 @@ def test_labels_override_the_defaults() -> None:
     assert target.user == "gift_owner"
     assert target.keep_last == 3
     assert target.schedule == "weekly"
+    assert target.interval == timedelta(weeks=1)
+
+
+@pytest.mark.parametrize(
+    ("schedule", "interval"),
+    [
+        ("hourly", timedelta(hours=1)),
+        ("6h", timedelta(hours=6)),
+        ("1d", timedelta(days=1)),
+        ("14d", timedelta(days=14)),
+    ],
+)
+def test_schedules_resolve_to_an_interval(schedule: str, interval: timedelta) -> None:
+    labels = {"bur.app": "giftring", "bur.schedule": schedule}
+
+    target = discovery.resolve(_container(labels), _config())
+
+    assert target.interval == interval
+
+
+@pytest.mark.parametrize("schedule", ["0h", "01d", "1.5d", "Daily", "2w", "", "d"])
+def test_a_schedule_that_does_not_parse_is_rejected(schedule: str) -> None:
+    labels = {"bur.app": "giftring", "bur.schedule": schedule}
+
+    with pytest.raises(InvalidLabel) as excinfo:
+        discovery.resolve(_container(labels), _config())
+    assert "bur.schedule" in str(excinfo.value)
 
 
 def test_a_traversing_app_name_is_rejected() -> None:
@@ -371,6 +400,7 @@ def _target() -> DBTarget:
         user="gift_owner",
         keep_last=10,
         schedule="daily",
+        interval=timedelta(days=1),
         excluded=False,
     )
 

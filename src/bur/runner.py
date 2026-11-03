@@ -20,6 +20,7 @@ from bur import crypto, dockerpg, manifest, naming, retention, storage
 from bur.config import Config
 from bur.container import throwaway
 from bur.processes import RunningProcess
+from bur.units import readable_size
 
 
 class BackupError(RuntimeError):
@@ -40,7 +41,6 @@ class BackupResult:
 
 
 _DRILL_SUPERUSER = "drillsuper"
-_BYTES_PER_MB = 1024**2
 _BYTES_PER_GB = 1024**3
 _VERSION_NUMBERS_PER_MAJOR = 10000
 
@@ -96,8 +96,8 @@ def backup_database(
     reserve = int(config.min_free_space_gb * _BYTES_PER_GB)
     if free - size < reserve:
         raise BackupError(
-            f"not enough free space for {app}: the dump can take up to {_readable_size(size)} "
-            f"and {_readable_size(free)} is free under {config.backup_root}, which would leave "
+            f"not enough free space for {app}: the dump can take up to {readable_size(size)} "
+            f"and {readable_size(free)} is free under {config.backup_root}, which would leave "
             f"less than min_free_space_gb ({config.min_free_space_gb:g} GB)"
         )
 
@@ -233,13 +233,6 @@ def _recorded_table_count(recorded: manifest.Manifest, dump_name: str) -> int:
         if database.dump.file == dump_name:
             return database.table_count
     raise DrillError(f"the manifest for {recorded.app} does not list {dump_name}")
-
-
-def _readable_size(size: int) -> str:
-    """Format a size in bytes as MB below a gigabyte, GB from there up"""
-    if size < _BYTES_PER_GB:
-        return f"{size / _BYTES_PER_MB:.1f} MB"
-    return f"{size / _BYTES_PER_GB:.1f} GB"
 
 
 def _read_database_size(container: str, db: str, user: str) -> int:

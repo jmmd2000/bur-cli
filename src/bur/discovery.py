@@ -10,6 +10,7 @@ import json
 import re
 import subprocess
 from dataclasses import dataclass
+from datetime import timedelta
 
 from bur import dockerpg
 from bur.config import Config
@@ -33,6 +34,12 @@ _ENABLE_LABEL = "bur.enable"
 _NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _DEFAULT_USER = "postgres"
 _DEFAULT_SCHEDULE = "daily"
+_SCHEDULE_WORDS = {
+    "hourly": timedelta(hours=1),
+    "daily": timedelta(days=1),
+    "weekly": timedelta(weeks=1),
+}
+_SCHEDULE_PATTERN = re.compile(r"^(?P<count>[1-9][0-9]*)(?P<unit>[hd])$")
 
 
 class InvalidLabel(ValueError):
@@ -49,6 +56,7 @@ class DBTarget:
     user: str
     keep_last: int
     schedule: str
+    interval: timedelta
     excluded: bool
 
 
@@ -204,8 +212,8 @@ def resolve(container: ContainerInfo, config: Config) -> DBTarget:
     :param container: A running container with ```bur.*`` labels
     :param config: Loaded config
     :returns: The resolved target
-    :raises InvalidLabel: If ``bur.app`` is missing, or a name or ``bur.keep_last``
-        value is not usable
+    :raises InvalidLabel: If ``bur.app`` is missing, or a name, ``bur.keep_last`` or
+        ``bur.schedule`` value is not usable
     """
     labels = container.labels
     if "bur.app" not in labels:
@@ -213,6 +221,7 @@ def resolve(container: ContainerInfo, config: Config) -> DBTarget:
     app = _name(labels["bur.app"], "bur.app")
     database = _name(labels.get("bur.database", app), "bur.database")
     user = _name(labels.get("bur.user", _DEFAULT_USER), "bur.user")
+    schedule = labels.get("bur.schedule", _DEFAULT_SCHEDULE)
 
     return DBTarget(
         container=container.name,
@@ -220,7 +229,8 @@ def resolve(container: ContainerInfo, config: Config) -> DBTarget:
         database=database,
         user=user,
         keep_last=_keep_last(labels, config.keep_last),
-        schedule=labels.get("bur.schedule", _DEFAULT_SCHEDULE),
+        schedule=schedule,
+        interval=_interval(schedule),
         excluded=app in config.exclude or container.name in config.exclude,
     )
 
@@ -230,6 +240,25 @@ def _name(value: str, label: str) -> str:
     if not _NAME_PATTERN.match(value):
         raise InvalidLabel(f"{label} must match {_NAME_PATTERN.pattern}, got {value!r}")
     return value
+
+
+def _interval(schedule: str) -> timedelta:
+    """Turn a ``bur.schedule`` value into the time between backups
+
+    Accepts ``hourly``, ``daily``, ``weekly``, ``<N>h`` or ``<N>d``, with N at least 1.
+    """
+    if schedule in _SCHEDULE_WORDS:
+        return _SCHEDULE_WORDS[schedule]
+
+    match = _SCHEDULE_PATTERN.match(schedule)
+    if match is None:
+        raise InvalidLabel(
+            f"bur.schedule must be hourly, daily, weekly, <N>h or <N>d, got {schedule!r}"
+        )
+    count = int(match["count"])
+    if match["unit"] == "h":
+        return timedelta(hours=count)
+    return timedelta(days=count)
 
 
 def _keep_last(labels: dict[str, str], default: int) -> int:

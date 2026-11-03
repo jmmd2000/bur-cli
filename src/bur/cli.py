@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -17,7 +18,9 @@ from bur.dockerpg import DockerCommandError
 from bur.manifest import ManifestError
 from bur.naming import InvalidBackupName, format_timestamp, parse_timestamp
 from bur.runner import BackupError, DrillError
+from bur.status import DatabaseStatus, app_runs, database_status, undiscovered_apps
 from bur.storage import BackupNotFound
+from bur.units import readable_age, readable_size
 
 app = typer.Typer()
 
@@ -204,6 +207,136 @@ def restore(
     typer.echo(f"restored {result.dump_name} into a throwaway postgres:{result.major}")
     for table, rows in result.row_counts.items():
         typer.echo(f"  {table}: {rows} rows")
+
+
+@app.command()
+def status(
+    app_name: Annotated[
+        str | None,
+        typer.Argument(metavar="APP", help="List every backup run for this app instead"),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Print the status as JSON")] = False,
+    config_path: Annotated[
+        Path | None, typer.Option("--config", help="Path to bur.toml, defaults to $BUR_CONFIG")
+    ] = None,
+) -> None:
+    """Show whether each discovered database has a recent backup"""
+    config = _load_config_or_exit(config_path)
+
+    if app_name is not None:
+        _print_app_runs(config, app_name, json_output)
+        return
+
+    try:
+        discovered = discovery.discover(config)
+    except DiscoveryError as error:
+        typer.secho(f"discovery failed: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    now = datetime.now(UTC)
+    statuses = [database_status(config, target, now) for target in discovered.targets]
+    undiscovered = undiscovered_apps(config, {target.app for target in discovered.targets})
+
+    if json_output:
+        _print_status_json(statuses, undiscovered, discovered.problems)
+    else:
+        _print_status_table(statuses, undiscovered, discovered.problems)
+
+    unhealthy = [
+        database
+        for database in statuses
+        if not database.target.excluded and database.health.level != "ok"
+    ]
+    if unhealthy or discovered.problems:
+        raise typer.Exit(code=1)
+
+
+def _print_app_runs(config: Config, app_name: str, json_output: bool) -> None:
+    """Print every stored backup run for one app, exiting 1 if it has none"""
+    runs = app_runs(config, app_name)
+
+    if json_output:
+        content = {
+            "app": app_name,
+            "runs": [
+                {
+                    "timestamp": format_timestamp(run.timestamp),
+                    "complete": run.complete,
+                    "dump_size": run.dump_size,
+                }
+                for run in runs
+            ],
+        }
+        typer.echo(json.dumps(content, indent=2))
+    else:
+        if runs:
+            typer.echo(f"{'TIMESTAMP':<18} {'COMPLETE':<9} SIZE")
+        for run in runs:
+            size = readable_size(run.dump_size) if run.dump_size is not None else "-"
+            complete = "yes" if run.complete else "no"
+            typer.echo(f"{format_timestamp(run.timestamp):<18} {complete:<9} {size}")
+
+    if not runs:
+        typer.secho(f"no backups for {app_name}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+
+def _print_status_table(
+    statuses: list[DatabaseStatus], undiscovered: list[str], problems: list[LabelProblem]
+) -> None:
+    """Print one line per database, then the undiscovered apps and any label problems"""
+    if statuses:
+        typer.echo(f"{'APP':<22} {'HEALTH':<10} {'LAST SUCCESS':<18} {'AGE':<9} SIZE")
+    for database in statuses:
+        last_success = database.health.last_success
+        age = database.health.age
+        size = database.dump_size
+        marker = "  (excluded)" if database.target.excluded else ""
+        line = (
+            f"{database.target.app:<22} {database.health.level:<10} "
+            f"{format_timestamp(last_success) if last_success else '-':<18} "
+            f"{readable_age(age) if age is not None else '-':<9} "
+            f"{readable_size(size) if size is not None else '-'}{marker}"
+        )
+        if database.target.excluded or database.health.level == "ok":
+            typer.echo(line)
+        else:
+            typer.secho(line, fg=typer.colors.RED)
+
+    for app_name in undiscovered:
+        typer.secho(f"{app_name}: has backups but is not discovered", fg=typer.colors.YELLOW)
+
+    for problem in problems:
+        typer.secho(f"{problem.container}: {problem.problem}", fg=typer.colors.RED, err=True)
+
+
+def _print_status_json(
+    statuses: list[DatabaseStatus], undiscovered: list[str], problems: list[LabelProblem]
+) -> None:
+    """Print the same status as one JSON object"""
+    databases = []
+    for database in statuses:
+        last_success = database.health.last_success
+        age = database.health.age
+        databases.append(
+            {
+                "app": database.target.app,
+                "container": database.target.container,
+                "health": database.health.level,
+                "excluded": database.target.excluded,
+                "last_success": format_timestamp(last_success) if last_success else None,
+                "age_seconds": int(age.total_seconds()) if age is not None else None,
+                "dump_size": database.dump_size,
+            }
+        )
+    content = {
+        "databases": databases,
+        "undiscovered": undiscovered,
+        "problems": [
+            {"container": problem.container, "problem": problem.problem} for problem in problems
+        ],
+    }
+    typer.echo(json.dumps(content, indent=2))
 
 
 @app.command()

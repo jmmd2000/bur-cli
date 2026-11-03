@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from bur import crypto, dockerpg, manifest, processes, runner, storage
+from bur import crypto, dockerpg, manifest, processes, remote, runner, storage
 from bur.config import Config
 from bur.dockerpg import DockerCommandError
 from bur.naming import ArtefactKind, build
@@ -533,3 +533,43 @@ def test_a_dry_run_prune_counts_the_run_about_to_be_written(tmp_path: Path) -> N
 
     assert [run.timestamp for run in pruned] == [older]
     assert len(storage.list_runs(root, "app")) == 2
+
+
+def _fake_remote(monkeypatch: pytest.MonkeyPatch, remote_names: list[str]) -> list[str]:
+    """Fake the remote listing, and record each upload in order."""
+    uploads: list[str] = []
+    monkeypatch.setattr(remote, "list_names", lambda config, app: remote_names)
+    monkeypatch.setattr(remote, "upload", lambda config, app, name: uploads.append(name))
+    return uploads
+
+
+def test_upload_new_runs_uploads_runs_newer_than_the_remote_oldest_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "backups"
+    hours = [datetime(2026, 6, 3, hour, tzinfo=UTC) for hour in range(1, 5)]
+    for when in hours[:3]:
+        _store_run(root, "app", when)
+    _store_run(root, "app", hours[3], complete=False)
+    kinds: tuple[ArtefactKind, ...] = ("dump", "globals", "manifest")
+    on_remote = [build("app", hours[0], kind) for kind in kinds]
+    uploads = _fake_remote(monkeypatch, on_remote)
+
+    uploaded = runner.upload_new_runs(_config(root, "age1unused"), "app")
+
+    assert [run.timestamp for run in uploaded] == [hours[1], hours[2]]
+    assert uploads == [build("app", when, kind) for when in hours[1:3] for kind in kinds]
+
+
+def test_upload_new_runs_retries_a_run_the_remote_only_partly_has(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "backups"
+    when = datetime(2026, 6, 3, 1, tzinfo=UTC)
+    _store_run(root, "app", when)
+    uploads = _fake_remote(monkeypatch, [build("app", when, "dump")])
+
+    uploaded = runner.upload_new_runs(_config(root, "age1unused"), "app")
+
+    assert [run.timestamp for run in uploaded] == [when]
+    assert uploads[-1] == build("app", when, "manifest")

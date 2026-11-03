@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-from collections.abc import Generator, Sequence
+from collections.abc import Generator, Iterable, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -174,9 +174,25 @@ def list_runs(root: Path, app: str) -> list[BackupRun]:
     :param app: Application to list runs for
     :returns: One entry per timestamp, newest first
     """
+    return group_runs(backup.name for backup in list_backups(root, app))
+
+
+def group_runs(names: Iterable[str]) -> list[BackupRun]:
+    """Group backup filenames into backup runs, newest first
+
+    Names that don't parse as backup names are skipped. A run is complete once it
+    has a dump, globals and manifest.
+
+    :param names: Backup filenames, from local disk or a remote listing
+    :returns: One entry per timestamp, newest first
+    """
     names_by_timestamp: dict[datetime, list[str]] = {}
-    for backup in list_backups(root, app):
-        names_by_timestamp.setdefault(backup.timestamp, []).append(backup.name)
+    for name in names:
+        try:
+            parsed = parse(name)
+        except InvalidBackupName:
+            continue
+        names_by_timestamp.setdefault(parsed.timestamp, []).append(name)
 
     runs: list[BackupRun] = []
     for timestamp, names in names_by_timestamp.items():

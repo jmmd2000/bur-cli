@@ -8,11 +8,12 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from bur import cli, discovery, runner
+from bur import cli, discovery, remote, runner
 from bur.cli import app
 from bur.config import Config
 from bur.discovery import ContainerInfo, DBTarget, Discovered, DiscoveryError, LabelProblem
 from bur.health import Health, HealthLevel
+from bur.remote import RemoteError
 from bur.runner import BackupError, BackupResult, DrillError, DrillResult
 from bur.status import DatabaseStatus, RunSummary
 from bur.storage import BackupRun
@@ -32,8 +33,13 @@ def _result(dry_run: bool = False) -> BackupResult:
     )
 
 
-def _patch_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    config = Config(backup_root=Path("/backups"), age_recipients=("age1example",))
+def _patch_config(monkeypatch: pytest.MonkeyPatch, with_remote: bool = False) -> None:
+    config = Config(
+        backup_root=Path("/backups"),
+        age_recipients=("age1example",),
+        r2_remote="r2" if with_remote else "",
+        r2_bucket="burr" if with_remote else "",
+    )
 
     def fake_load_config(path: Path | None = None) -> Config:
         return config
@@ -613,7 +619,7 @@ def test_status_prints_json(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_status_app_lists_its_runs(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_config(monkeypatch)
-    run = RunSummary(datetime(2026, 6, 3, 17, 48, tzinfo=UTC), True, 4096)
+    run = RunSummary(datetime(2026, 6, 3, 17, 48, tzinfo=UTC), True, 4096, "both")
     monkeypatch.setattr(cli, "app_runs", lambda config, app_name: [run])
 
     outcome = _cli.invoke(app, ["status", "giftring", "--json"])
@@ -621,7 +627,7 @@ def test_status_app_lists_its_runs(monkeypatch: pytest.MonkeyPatch) -> None:
     assert outcome.exit_code == 0
     content = json.loads(outcome.stdout)
     assert content["runs"] == [
-        {"timestamp": "20260603T174800Z", "complete": True, "dump_size": 4096}
+        {"timestamp": "20260603T174800Z", "complete": True, "dump_size": 4096, "location": "both"}
     ]
 
 
@@ -650,3 +656,91 @@ def test_due_skips_a_database_that_is_not_due(monkeypatch: pytest.MonkeyPatch) -
 
     assert outcome.exit_code == 0
     assert [call["app"] for call in calls] == ["issues", "new"]
+
+
+def _patch_upload(monkeypatch: pytest.MonkeyPatch, events: list[str], fail: bool = False) -> None:
+    """Fake the upload, recording it, and raise when ``fail`` is set."""
+
+    def fake_upload(config: Config, app_name: str) -> tuple[BackupRun, ...]:
+        events.append(f"upload {app_name}")
+        if fail:
+            raise RemoteError("couldn't connect")
+        return ()
+
+    monkeypatch.setattr(runner, "upload_new_runs", fake_upload)
+
+
+def test_backup_uploads_before_it_prunes(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch, with_remote=True)
+    _patch_discover(monkeypatch, Discovered([_target("giftring")], []))
+    prune_calls = _patch_backup(monkeypatch, [])
+    events: list[str] = []
+    _patch_upload(monkeypatch, events)
+
+    outcome = _cli.invoke(app, ["backup"])
+
+    assert outcome.exit_code == 0
+    assert events == ["upload giftring"]
+    assert len(prune_calls) == 1
+
+
+def test_a_failed_upload_fails_the_run_and_skips_the_prune(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_config(monkeypatch, with_remote=True)
+    _patch_discover(monkeypatch, Discovered([_target("giftring")], []))
+    prune_calls = _patch_backup(monkeypatch, [])
+    _patch_upload(monkeypatch, [], fail=True)
+
+    outcome = _cli.invoke(app, ["backup"])
+
+    assert outcome.exit_code == 1
+    assert prune_calls == []
+
+
+def test_a_database_that_is_not_due_still_retries_its_upload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_config(monkeypatch, with_remote=True)
+    _patch_discover(monkeypatch, Discovered([_target("giftring")], []))
+    calls: list[dict[str, object]] = []
+    _patch_backup(monkeypatch, calls)
+    events: list[str] = []
+    _patch_upload(monkeypatch, events)
+    monkeypatch.setattr(cli, "last_success", lambda config, app_name: datetime.now(UTC))
+
+    outcome = _cli.invoke(app, ["backup", "--due"])
+
+    assert outcome.exit_code == 0
+    assert calls == []
+    assert events == ["upload giftring"]
+
+
+def test_backup_does_not_upload_without_a_remote(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    _patch_discover(monkeypatch, Discovered([_target("giftring")], []))
+    _patch_backup(monkeypatch, [])
+    events: list[str] = []
+    _patch_upload(monkeypatch, events)
+
+    outcome = _cli.invoke(app, ["backup"])
+
+    assert outcome.exit_code == 0
+    assert events == []
+
+
+@pytest.mark.parametrize("reachable", [True, False])
+def test_check_checks_the_r2_bucket(monkeypatch: pytest.MonkeyPatch, reachable: bool) -> None:
+    _patch_config(monkeypatch, with_remote=True)
+    _patch_discover(monkeypatch, Discovered([], []))
+    _patch_audit(monkeypatch, [])
+
+    def fake_check_bucket(config: Config) -> None:
+        if not reachable:
+            raise RemoteError("rclone is not installed")
+
+    monkeypatch.setattr(remote, "check_bucket", fake_check_bucket)
+
+    outcome = _cli.invoke(app, ["check"])
+
+    assert outcome.exit_code == (0 if reachable else 1)

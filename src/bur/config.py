@@ -85,12 +85,17 @@ def _build_config(raw: dict[str, object]) -> Config:
     if not age_recipients:
         raise ConfigError("age_recipients must not be empty")
 
+    r2_remote = _optional_str(raw, "r2_remote", "")
+    r2_bucket = _optional_str(raw, "r2_bucket", "")
+    if bool(r2_remote) != bool(r2_bucket):
+        raise ConfigError("set r2_remote and r2_bucket together, or leave both empty")
+
     return Config(
         backup_root=Path(_require_str(raw, "backup_root")),
         age_recipients=tuple(age_recipients),
         keep_last=_optional_int(raw, "keep_last", _DEFAULT_KEEP_LAST),
-        r2_remote=_optional_str(raw, "r2_remote", ""),
-        r2_bucket=_optional_str(raw, "r2_bucket", ""),
+        r2_remote=r2_remote,
+        r2_bucket=r2_bucket,
         overdue_hours=_optional_number(raw, "overdue_hours", _DEFAULT_OVERDUE_HOURS),
         min_free_space_gb=_optional_number(raw, "min_free_space_gb", _DEFAULT_MIN_FREE_SPACE_GB),
         audit_images=tuple(_optional_str_list(raw, "audit_images", list(_DEFAULT_AUDIT_IMAGES))),

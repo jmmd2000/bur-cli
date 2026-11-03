@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from bur import crypto, dockerpg, manifest, naming, retention, storage
+from bur import crypto, dockerpg, manifest, naming, remote, retention, storage
 from bur.config import Config
 from bur.container import throwaway
 from bur.processes import RunningProcess
@@ -139,6 +139,33 @@ def backup_database(
     return BackupResult(app, when, dump_name, globals_name, manifest_name, size, dry_run=False)
 
 
+def upload_new_runs(config: Config, app: str) -> tuple[storage.BackupRun, ...]:
+    """Upload each complete local run newer than the newest complete run on the remote
+
+    Uploads the runs oldest first, and each run's manifest last, so a run that is
+    only partly uploaded doesn't count as complete on the remote. An older run
+    missing from the remote is never uploaded again, so files the remote has
+    expired don't come back.
+
+    :param config: Loaded configuration (backup root and remote)
+    :param app: Application whose runs to upload
+    :returns: The runs uploaded, oldest first
+    :raises RemoteError: If rclone is missing, or listing or an upload fails
+    """
+    newest_remote = _newest_complete_timestamp(storage.group_runs(remote.list_names(config, app)))
+
+    to_upload: list[storage.BackupRun] = []
+    for run in storage.list_runs(config.backup_root, app):
+        if run.complete and (newest_remote is None or run.timestamp > newest_remote):
+            to_upload.append(run)
+    to_upload.reverse()
+
+    for run in to_upload:
+        for name in _manifest_last(run.names):
+            remote.upload(config, app, name)
+    return tuple(to_upload)
+
+
 def prune(
     config: Config, app: str, keep: int, newest: datetime, *, dry_run: bool = False
 ) -> tuple[storage.BackupRun, ...]:
@@ -225,6 +252,20 @@ def restore_drill(
     return DrillResult(
         app, pair.dump_name, pair.globals_name, pair.timestamp, image_major, row_counts
     )
+
+
+def _newest_complete_timestamp(runs: list[storage.BackupRun]) -> datetime | None:
+    for run in runs:
+        if run.complete:
+            return run.timestamp
+    return None
+
+
+def _manifest_last(names: tuple[str, ...]) -> list[str]:
+    """Order a run's filenames so the manifest comes last"""
+    manifests = [name for name in names if naming.parse(name).kind == "manifest"]
+    others = [name for name in names if naming.parse(name).kind != "manifest"]
+    return others + manifests
 
 
 def _recorded_table_count(recorded: manifest.Manifest, dump_name: str) -> int:

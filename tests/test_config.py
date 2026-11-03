@@ -127,3 +127,9 @@ def test_audit_images_must_be_a_list_of_non_empty_strings(tmp_path: Path, value:
     body = f'backup_root = "/backups"\nage_recipients = ["age1abc"]\naudit_images = {value}'
     with pytest.raises(ConfigError, match="audit_images must be a list of non-empty strings"):
         load_config(_write(tmp_path, body))
+
+
+@pytest.mark.parametrize("field", ['r2_remote = "r2"', 'r2_bucket = "burr"'])
+def test_one_r2_field_without_the_other_is_rejected(tmp_path: Path, field: str) -> None:
+    with pytest.raises(ConfigError, match="r2_remote and r2_bucket"):
+        load_config(_write(tmp_path, _MINIMAL + field + "\n"))

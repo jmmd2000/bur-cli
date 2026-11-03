@@ -9,7 +9,7 @@ from typing import Annotated
 
 import typer
 
-from bur import discovery, health, runner
+from bur import discovery, health, remote, runner
 from bur.config import Config, ConfigError, load_config
 from bur.container import ContainerError
 from bur.crypto import CryptoError
@@ -17,6 +17,7 @@ from bur.discovery import DBTarget, DiscoveryError, LabelProblem
 from bur.dockerpg import DockerCommandError
 from bur.manifest import ManifestError
 from bur.naming import InvalidBackupName, format_timestamp, parse_timestamp
+from bur.remote import RemoteError
 from bur.runner import BackupError, DrillError
 from bur.status import (
     DatabaseStatus,
@@ -89,6 +90,8 @@ def backup(
             typer.echo(f"{target.app}: excluded, skipped")
             continue
         if due and not _is_due(config, target, now):
+            if not dry_run and not _upload_new_runs(config, target.app):
+                failures += 1
             continue
         if not _back_up_target(config, target, dry_run):
             failures += 1
@@ -121,9 +124,12 @@ def _is_due(config: Config, target: DBTarget, now: datetime) -> bool:
 
 
 def _back_up_target(config: Config, target: DBTarget, dry_run: bool) -> bool:
-    """Back up one database, prune its old runs, and print the outcome
+    """Back up one database, upload it, prune its old runs, and print the outcome
 
-    :returns: True if the backup and the prune both succeeded
+    The prune is skipped when the upload fails, so a run that never reached the
+    remote is never pruned.
+
+    :returns: True if the backup, the upload and the prune all succeeded
     """
     try:
         result = runner.backup_database(
@@ -137,6 +143,9 @@ def _back_up_target(config: Config, target: DBTarget, dry_run: bool) -> bool:
     typer.echo(
         f"{target.app}: {verb} {result.dump_name}, {result.globals_name} and {result.manifest_name}"
     )
+
+    if not dry_run and not _upload_new_runs(config, target.app):
+        return False
 
     try:
         pruned = runner.prune(
@@ -153,6 +162,24 @@ def _back_up_target(config: Config, target: DBTarget, dry_run: bool) -> bool:
     verb = "would prune" if dry_run else "pruned"
     for run in pruned:
         typer.echo(f"{target.app}: {verb} the backup from {format_timestamp(run.timestamp)}")
+    return True
+
+
+def _upload_new_runs(config: Config, app_name: str) -> bool:
+    """Upload an app's new runs to the remote, if one is configured, and print the outcome
+
+    :returns: True if the upload succeeded or no remote is configured
+    """
+    if not remote.is_configured(config):
+        return True
+    try:
+        uploaded = runner.upload_new_runs(config, app_name)
+    except (RemoteError, OSError) as error:
+        typer.secho(f"{app_name}: upload to R2 failed, {error}", fg=typer.colors.RED, err=True)
+        return False
+
+    for run in uploaded:
+        typer.echo(f"{app_name}: uploaded the backup from {format_timestamp(run.timestamp)} to R2")
     return True
 
 
@@ -274,8 +301,12 @@ def status(
 
 
 def _print_app_runs(config: Config, app_name: str, json_output: bool) -> None:
-    """Print every stored backup run for one app, exiting 1 if it has none"""
-    runs = app_runs(config, app_name)
+    """Print every backup run for one app, exiting 1 if it has none or R2 can't be listed"""
+    try:
+        runs = app_runs(config, app_name)
+    except RemoteError as error:
+        typer.secho(f"could not list R2 for {app_name}: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
 
     if json_output:
         content = {
@@ -285,6 +316,7 @@ def _print_app_runs(config: Config, app_name: str, json_output: bool) -> None:
                     "timestamp": format_timestamp(run.timestamp),
                     "complete": run.complete,
                     "dump_size": run.dump_size,
+                    "location": run.location,
                 }
                 for run in runs
             ],
@@ -292,11 +324,13 @@ def _print_app_runs(config: Config, app_name: str, json_output: bool) -> None:
         typer.echo(json.dumps(content, indent=2))
     else:
         if runs:
-            typer.echo(f"{'TIMESTAMP':<18} {'COMPLETE':<9} SIZE")
+            typer.echo(f"{'TIMESTAMP':<18} {'COMPLETE':<9} {'WHERE':<6} SIZE")
         for run in runs:
             size = readable_size(run.dump_size) if run.dump_size is not None else "-"
             complete = "yes" if run.complete else "no"
-            typer.echo(f"{format_timestamp(run.timestamp):<18} {complete:<9} {size}")
+            typer.echo(
+                f"{format_timestamp(run.timestamp):<18} {complete:<9} {run.location:<6} {size}"
+            )
 
     if not runs:
         typer.secho(f"no backups for {app_name}", fg=typer.colors.RED, err=True)
@@ -308,14 +342,14 @@ def _print_status_table(
 ) -> None:
     """Print one line per database, then the undiscovered apps and any label problems"""
     if statuses:
-        typer.echo(f"{'APP':<22} {'HEALTH':<10} {'LAST SUCCESS':<18} {'AGE':<9} SIZE")
+        typer.echo(f"{'APP':<22} {'HEALTH':<11} {'LAST SUCCESS':<18} {'AGE':<9} SIZE")
     for database in statuses:
         last_success = database.health.last_success
         age = database.health.age
         size = database.dump_size
         marker = "  (excluded)" if database.target.excluded else ""
         line = (
-            f"{database.target.app:<22} {database.health.level:<10} "
+            f"{database.target.app:<22} {database.health.level:<11} "
             f"{format_timestamp(last_success) if last_success else '-':<18} "
             f"{readable_age(age) if age is not None else '-':<9} "
             f"{readable_size(size) if size is not None else '-'}{marker}"
@@ -324,6 +358,12 @@ def _print_status_table(
             typer.echo(line)
         else:
             typer.secho(line, fg=typer.colors.RED)
+        if database.remote_error is not None:
+            typer.secho(
+                f"{database.target.app}: could not list R2, {database.remote_error}",
+                fg=typer.colors.RED,
+                err=True,
+            )
 
     for app_name in undiscovered:
         typer.secho(f"{app_name}: has backups but is not discovered", fg=typer.colors.YELLOW)
@@ -349,6 +389,7 @@ def _print_status_json(
                 "last_success": format_timestamp(last_success) if last_success else None,
                 "age_seconds": int(age.total_seconds()) if age is not None else None,
                 "dump_size": database.dump_size,
+                "remote_error": database.remote_error,
             }
         )
     content = {
@@ -435,6 +476,14 @@ def check(
             err=True,
         )
         failures += 1
+
+    if remote.is_configured(config):
+        try:
+            remote.check_bucket(config)
+            typer.echo(f"R2 bucket {config.r2_bucket}: ok")
+        except RemoteError as error:
+            typer.secho(f"R2 bucket {config.r2_bucket}: {error}", fg=typer.colors.RED, err=True)
+            failures += 1
 
     if failures:
         typer.secho(f"{failures} problem(s) found", fg=typer.colors.RED, err=True)

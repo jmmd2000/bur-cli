@@ -230,3 +230,14 @@ def test_delete_run_removes_the_manifest_first(
     storage.delete_run(tmp_path, "app", run)
 
     assert deleted[0].endswith(".manifest.json")
+
+
+def test_group_runs_skips_names_that_are_not_backups() -> None:
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    names = [build("app", when, "dump"), "notes.txt", build("app", when, "globals")]
+
+    runs = storage.group_runs(names)
+
+    assert len(runs) == 1
+    assert runs[0].names == (build("app", when, "dump"), build("app", when, "globals"))
+    assert runs[0].complete is False

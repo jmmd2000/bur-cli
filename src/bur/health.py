@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
-HealthLevel = Literal["ok", "overdue", "never"]
+HealthLevel = Literal["ok", "overdue", "never", "local_only"]
 
 _DUE_FRACTION = 0.9
 
@@ -24,17 +24,24 @@ class Health:
 
 
 def evaluate(
-    last_success: datetime | None, interval: timedelta, overdue_hours: float, now: datetime
+    last_success: datetime | None,
+    interval: timedelta,
+    overdue_hours: float,
+    now: datetime,
+    offsite: bool | None = None,
 ) -> Health:
     """Work out one database's health from its newest complete backup
 
     A database is overdue once its newest complete backup is older than its
-    interval plus ``overdue_hours`` of grace.
+    interval plus ``overdue_hours`` of grace. A backup that is on time but not on
+    the remote is local only. Overdue takes precedence over local only.
 
     :param last_success: Timestamp of the newest complete backup, or None if there is none
     :param interval: Time between backups, from the database's schedule
     :param overdue_hours: Grace period on top of the interval
     :param now: The current time, timezone-aware
+    :param offsite: Whether the newest complete backup is on the remote, or None
+        when no remote is configured
     :returns: The health level, the last success and its age
     """
     if last_success is None:
@@ -43,6 +50,8 @@ def evaluate(
     age = now - last_success
     if age > interval + timedelta(hours=overdue_hours):
         return Health("overdue", last_success, age)
+    if offsite is False:
+        return Health("local_only", last_success, age)
     return Health("ok", last_success, age)
 
 

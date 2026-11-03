@@ -4,17 +4,30 @@ import io
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from bur import storage
+import pytest
+
+from bur import remote, storage
 from bur.config import Config
 from bur.discovery import DBTarget
 from bur.naming import ArtefactKind, build
+from bur.remote import RemoteError
 from bur.status import app_runs, database_status, undiscovered_apps
 
 _NOW = datetime(2026, 6, 3, 12, 0, tzinfo=UTC)
 
 
-def _config(root: Path) -> Config:
-    return Config(backup_root=root, age_recipients=("age1unused",))
+def _config(root: Path, with_remote: bool = False) -> Config:
+    return Config(
+        backup_root=root,
+        age_recipients=("age1unused",),
+        r2_remote="r2" if with_remote else "",
+        r2_bucket="burr" if with_remote else "",
+    )
+
+
+def _run_names(app: str, when: datetime) -> list[str]:
+    kinds: tuple[ArtefactKind, ...] = ("dump", "globals", "manifest")
+    return [build(app, when, kind) for kind in kinds]
 
 
 def _target(app: str = "giftring") -> DBTarget:
@@ -79,4 +92,52 @@ def test_app_runs_lists_every_run_newest_first(tmp_path: Path) -> None:
     assert [(run.timestamp, run.complete, run.dump_size) for run in runs] == [
         (newer, False, 20),
         (older, True, 300),
+    ]
+
+
+@pytest.mark.parametrize(("on_remote", "level"), [(True, "ok"), (False, "local_only")])
+def test_status_checks_the_newest_run_is_on_the_remote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, on_remote: bool, level: str
+) -> None:
+    when = _NOW - timedelta(hours=5)
+    _store_run(tmp_path, "giftring", when, b"x")
+    names = _run_names("giftring", when) if on_remote else _run_names("giftring", when)[:2]
+    monkeypatch.setattr(remote, "list_names", lambda config, app: names)
+
+    result = database_status(_config(tmp_path, with_remote=True), _target(), _NOW)
+
+    assert result.health.level == level
+
+
+def test_status_is_local_only_when_the_remote_cannot_be_listed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _store_run(tmp_path, "giftring", _NOW - timedelta(hours=5), b"x")
+
+    def fail(config: Config, app: str) -> list[str]:
+        raise RemoteError("couldn't connect")
+
+    monkeypatch.setattr(remote, "list_names", fail)
+
+    result = database_status(_config(tmp_path, with_remote=True), _target(), _NOW)
+
+    assert result.health.level == "local_only"
+    assert result.remote_error == "couldn't connect"
+
+
+def test_app_runs_shows_where_each_run_is(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    only_remote = _NOW - timedelta(days=3)
+    both = _NOW - timedelta(days=2)
+    only_local = _NOW - timedelta(days=1)
+    _store_run(tmp_path, "giftring", both, b"x")
+    _store_run(tmp_path, "giftring", only_local, b"x")
+    names = _run_names("giftring", only_remote) + _run_names("giftring", both)
+    monkeypatch.setattr(remote, "list_names", lambda config, app: names)
+
+    runs = app_runs(_config(tmp_path, with_remote=True), "giftring")
+
+    assert [(run.timestamp, run.location) for run in runs] == [
+        (only_local, "local"),
+        (both, "both"),
+        (only_remote, "r2"),
     ]

@@ -463,6 +463,14 @@ def check(
         )
         failures += 1
 
+    if remote.is_configured(config):
+        try:
+            remote.check_bucket(config)
+            typer.echo(f"R2 bucket {config.r2_bucket}: ok")
+        except RemoteError as error:
+            typer.secho(f"R2 bucket {config.r2_bucket}: {error}", fg=typer.colors.RED, err=True)
+            failures += 1
+
     if failures:
         typer.secho(f"{failures} problem(s) found", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)

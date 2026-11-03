@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from bur import cli, discovery, runner
+from bur import cli, discovery, remote, runner
 from bur.cli import app
 from bur.config import Config
 from bur.discovery import ContainerInfo, DBTarget, Discovered, DiscoveryError, LabelProblem
@@ -727,3 +727,20 @@ def test_backup_does_not_upload_without_a_remote(monkeypatch: pytest.MonkeyPatch
 
     assert outcome.exit_code == 0
     assert events == []
+
+
+@pytest.mark.parametrize("reachable", [True, False])
+def test_check_checks_the_r2_bucket(monkeypatch: pytest.MonkeyPatch, reachable: bool) -> None:
+    _patch_config(monkeypatch, with_remote=True)
+    _patch_discover(monkeypatch, Discovered([], []))
+    _patch_audit(monkeypatch, [])
+
+    def fake_check_bucket(config: Config) -> None:
+        if not reachable:
+            raise RemoteError("rclone is not installed")
+
+    monkeypatch.setattr(remote, "check_bucket", fake_check_bucket)
+
+    outcome = _cli.invoke(app, ["check"])
+
+    assert outcome.exit_code == (0 if reachable else 1)

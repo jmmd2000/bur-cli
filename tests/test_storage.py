@@ -184,3 +184,18 @@ def test_find_backup_pair_raises_when_no_run_is_complete(tmp_path: Path) -> None
 
     with pytest.raises(storage.BackupNotFound, match="no complete backup"):
         storage.find_backup_pair(tmp_path, "app")
+
+
+def test_list_runs_groups_files_by_timestamp_newest_first(tmp_path: Path) -> None:
+    older = datetime(2026, 1, 1, tzinfo=UTC)
+    newer = datetime(2026, 2, 1, tzinfo=UTC)
+    _write_pair(tmp_path, "app", older)
+    storage.write(tmp_path, "app", build("app", newer, "dump"), io.BytesIO(b"payload"))
+
+    runs = storage.list_runs(tmp_path, "app")
+
+    assert [run.timestamp for run in runs] == [newer, older]
+    assert runs[0].names == (build("app", newer, "dump"),)
+    assert runs[0].complete is False
+    assert len(runs[1].names) == 3
+    assert runs[1].complete is True

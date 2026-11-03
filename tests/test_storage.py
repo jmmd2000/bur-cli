@@ -104,7 +104,7 @@ def test_free_space_handles_a_root_that_does_not_exist_yet(tmp_path: Path) -> No
 
 
 def _write_pair(root: Path, app: str, when: datetime) -> None:
-    kinds: tuple[ArtefactKind, ...] = ("dump", "globals")
+    kinds: tuple[ArtefactKind, ...] = ("dump", "globals", "manifest")
     for kind in kinds:
         storage.write(root, app, build(app, when, kind), io.BytesIO(b"payload"))
 
@@ -120,6 +120,7 @@ def test_find_backup_pair_returns_the_newest_run(tmp_path: Path) -> None:
     assert pair.timestamp == newer
     assert pair.dump_name == build("app", newer, "dump")
     assert pair.globals_name == build("app", newer, "globals")
+    assert pair.manifest_name == build("app", newer, "manifest")
 
 
 def test_find_backup_pair_finds_a_specific_run(tmp_path: Path) -> None:
@@ -141,6 +142,17 @@ def test_find_backup_pair_needs_both_artefacts(tmp_path: Path) -> None:
     with pytest.raises(storage.BackupNotFound) as excinfo:
         storage.find_backup_pair(tmp_path, "app", when)
     assert "missing its globals" in str(excinfo.value)
+
+
+def test_find_backup_pair_needs_the_manifest(tmp_path: Path) -> None:
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    for kind in ("dump", "globals"):
+        storage.write(tmp_path, "app", build("app", when, kind), io.BytesIO(b"payload"))
+
+    with pytest.raises(storage.BackupNotFound, match="manifest"):
+        storage.find_backup_pair(tmp_path, "app", when)
+    with pytest.raises(storage.BackupNotFound):
+        storage.find_backup_pair(tmp_path, "app")
 
 
 def test_find_backup_pair_raises_when_there_are_none(tmp_path: Path) -> None:

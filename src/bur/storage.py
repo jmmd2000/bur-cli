@@ -19,7 +19,7 @@ from typing import IO
 
 from bur.naming import ArtefactKind, InvalidBackupName, parse
 
-_RUN_KINDS: tuple[ArtefactKind, ...] = ("dump", "globals")
+_RUN_KINDS: tuple[ArtefactKind, ...] = ("dump", "globals", "manifest")
 
 
 @dataclass(frozen=True)
@@ -38,10 +38,11 @@ class BackupNotFound(Exception):
 
 @dataclass(frozen=True)
 class BackupPair:
-    """The dump and globals artefacts from one backup run"""
+    """The dump, globals and manifest from one backup run"""
 
     dump_name: str
     globals_name: str
+    manifest_name: str
     timestamp: datetime
 
 
@@ -96,7 +97,7 @@ def write(root: Path, app: str, name: str, stream: IO[bytes]) -> None:
 
 
 def list_backups(root: Path, app: str) -> list[BackupFile]:
-    """List an apps stored backups, newest first
+    """List an apps stored backup files, manifests included, newest first
 
     Files that don't parse as backup names are skipped
 
@@ -156,12 +157,14 @@ def free_space(root: Path) -> int:
 
 
 def find_backup_pair(root: Path, app: str, timestamp: datetime | None = None) -> BackupPair:
-    """Find one complete run's dump and globals artefacts
+    """Find one complete run's dump, globals and manifest
+
+    A run is complete once its manifest exists, since the manifest is written last.
 
     :param root: Backup root directory
     :param app: Application to look up
     :param timestamp: Run to find, or None for the newest complete run
-    :returns: The two artefact names and the timestamp they share
+    :returns: The three filenames and the timestamp they share
     :raises BackupNotFound: If there are no complete backups, the timestamp is unknown, or that run
     is missing one of its artefacts
     """
@@ -190,7 +193,7 @@ def find_backup_pair(root: Path, app: str, timestamp: datetime | None = None) ->
         raise BackupNotFound(
             f"backup for {app} at {chosen.isoformat()} is missing its {' and '.join(missing)}"
         )
-    return BackupPair(artefacts["dump"], artefacts["globals"], chosen)
+    return BackupPair(artefacts["dump"], artefacts["globals"], artefacts["manifest"], chosen)
 
 
 def _missing_kinds(artefacts: dict[str, str]) -> list[str]:

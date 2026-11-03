@@ -267,8 +267,9 @@ def _store_pair(
     recipient: str,
     tmp_path: Path,
     dump: bytes = b"pretend custom format dump",
+    table_count: int = 1,
 ) -> None:
-    """Write a real encrypted dump and globals pair for an app."""
+    """Write a real encrypted dump and globals pair for an app, then its manifest."""
     payloads: tuple[tuple[ArtefactKind, bytes], ...] = (
         ("dump", dump),
         ("globals", b"-- roles and grants"),
@@ -276,6 +277,22 @@ def _store_pair(
     for kind, payload in payloads:
         with storage.atomic_write(root, app, build(app, when, kind)) as out:
             crypto.encrypt(_emitting(payload, tmp_path, kind), [recipient], out)
+
+    manifest.write(
+        root,
+        manifest.Manifest(
+            app=app,
+            timestamp=when,
+            postgres_major=17,
+            globals=manifest.record_artefact(root, app, build(app, when, "globals")),
+            databases={
+                app: manifest.DatabaseRecord(
+                    dump=manifest.record_artefact(root, app, build(app, when, "dump")),
+                    table_count=table_count,
+                )
+            },
+        ),
+    )
 
 
 def _patch_drill(

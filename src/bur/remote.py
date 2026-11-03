@@ -36,16 +36,29 @@ def is_configured(config: Config) -> bool:
 def upload(config: Config, app: str, name: str) -> None:
     """Upload one stored backup file to the remote
 
-    ``--immutable`` makes rclone skip a file that is already there with the same
-    content, and fail instead of overwriting one that differs.
+    Copies the app's folder with a filter that matches only this file.
+    ``--immutable`` makes rclone skip a file that is already there unchanged, and
+    fail instead of overwriting one that differs. ``copyto`` ignores
+    ``--immutable`` and overwrites, so it is not used.
 
     :param config: Loaded configuration (backup root and remote)
     :param app: Application the file belongs to
     :param name: Filename within ``<backup_root>/<app>``
     :raises RemoteError: If rclone is missing or the upload fails
     """
-    source = config.backup_root / app / name
-    _check(_run(["copyto", "--immutable", str(source), _remote_path(config, app, name)]))
+    source = config.backup_root / app
+    _check(
+        _run(
+            [
+                "copy",
+                "--immutable",
+                "--include",
+                f"/{name}",
+                str(source),
+                _remote_path(config, app, ""),
+            ]
+        )
+    )
 
 
 def list_names(config: Config, app: str) -> list[str]:

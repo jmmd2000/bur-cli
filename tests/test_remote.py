@@ -38,8 +38,14 @@ def test_upload_never_overwrites(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
     remote.upload(_config(tmp_path), "giftring", "giftring-20260603T174800Z.dump.age")
 
-    assert commands[0][:3] == ["rclone", "copyto", "--immutable"]
-    assert commands[0][4] == "r2:burr/giftring/giftring-20260603T174800Z.dump.age"
+    assert commands[0][:5] == [
+        "rclone",
+        "copy",
+        "--immutable",
+        "--include",
+        "/giftring-20260603T174800Z.dump.age",
+    ]
+    assert commands[0][6] == "r2:burr/giftring/"
     assert "--timeout" in commands[0]
 
 

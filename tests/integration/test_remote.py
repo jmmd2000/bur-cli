@@ -53,3 +53,13 @@ def test_upload_refuses_to_overwrite_a_different_file(tmp_path: Path) -> None:
     with pytest.raises(RemoteError):
         remote.upload(config, "giftring", _NAME)
     assert (tmp_path / "bucket" / "giftring" / _NAME).read_bytes() == b"first"
+
+
+def test_uploading_an_unchanged_file_again_succeeds(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    _store(config, b"ciphertext")
+    remote.upload(config, "giftring", _NAME)
+
+    remote.upload(config, "giftring", _NAME)
+
+    assert remote.list_names(config, "giftring") == [_NAME]

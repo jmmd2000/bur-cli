@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -30,6 +30,15 @@ class BackupFile:
     size: int
     modified: datetime
     timestamp: datetime
+
+
+@dataclass(frozen=True)
+class BackupRun:
+    """The stored files that share one run timestamp"""
+
+    timestamp: datetime
+    names: tuple[str, ...]
+    complete: bool
 
 
 class BackupNotFound(Exception):
@@ -156,6 +165,44 @@ def free_space(root: Path) -> int:
     return shutil.disk_usage(directory).free
 
 
+def list_runs(root: Path, app: str) -> list[BackupRun]:
+    """Group an app's stored files into backup runs, newest first
+
+    A run is complete once it has a dump, globals and manifest.
+
+    :param root: Backup root directory
+    :param app: Application to list runs for
+    :returns: One entry per timestamp, newest first
+    """
+    names_by_timestamp: dict[datetime, list[str]] = {}
+    for backup in list_backups(root, app):
+        names_by_timestamp.setdefault(backup.timestamp, []).append(backup.name)
+
+    runs: list[BackupRun] = []
+    for timestamp, names in names_by_timestamp.items():
+        complete = not _missing_kinds(names)
+        runs.append(BackupRun(timestamp, tuple(sorted(names)), complete))
+    runs.sort(key=lambda run: run.timestamp, reverse=True)
+    return runs
+
+
+def delete_run(root: Path, app: str, run: BackupRun) -> None:
+    """Delete every stored file of one backup run
+
+    Deletes the manifest first, so a run that is only partly deleted reads as incomplete.
+
+    :param root: Backup root directory
+    :param app: Application the run belongs to
+    :param run: The run to delete
+    """
+    directory = root / app
+    for name in run.names:
+        if parse(name).kind == "manifest":
+            (directory / name).unlink(missing_ok=True)
+    for name in run.names:
+        (directory / name).unlink(missing_ok=True)
+
+
 def find_backup_pair(root: Path, app: str, timestamp: datetime | None = None) -> BackupPair:
     """Find one complete run's dump, globals and manifest
 
@@ -168,34 +215,56 @@ def find_backup_pair(root: Path, app: str, timestamp: datetime | None = None) ->
     :raises BackupNotFound: If there are no complete backups, the timestamp is unknown, or that run
     is missing one of its artefacts
     """
-    runs: dict[datetime, dict[str, str]] = {}
-    for backup in list_backups(root, app):
-        parsed = parse(backup.name)
-        runs.setdefault(parsed.timestamp, {})[parsed.kind] = backup.name
-
+    runs = list_runs(root, app)
     if not runs:
         raise BackupNotFound(f"no backups for {app} under {root}")
 
     if timestamp is None:
-        complete = [when for when, artefacts in runs.items() if not _missing_kinds(artefacts)]
-        if not complete:
+        chosen = _newest_complete(runs)
+        if chosen is None:
             raise BackupNotFound(f"no complete backup for {app} under {root}")
-        chosen = max(complete)
     else:
-        chosen = timestamp
+        chosen = _run_at(runs, timestamp)
+        if chosen is None:
+            raise BackupNotFound(f"no backup found for {app} at {timestamp.isoformat()}")
 
-    artefacts = runs.get(chosen)
-    if artefacts is None:
-        raise BackupNotFound(f"no backup found for {app} at {chosen.isoformat()}")
-
-    missing = _missing_kinds(artefacts)
+    missing = _missing_kinds(chosen.names)
     if missing:
         raise BackupNotFound(
-            f"backup for {app} at {chosen.isoformat()} is missing its {' and '.join(missing)}"
+            f"backup for {app} at {chosen.timestamp.isoformat()} is missing its "
+            f"{' and '.join(missing)}"
         )
-    return BackupPair(artefacts["dump"], artefacts["globals"], artefacts["manifest"], chosen)
+    return BackupPair(
+        _name_of_kind(chosen.names, "dump"),
+        _name_of_kind(chosen.names, "globals"),
+        _name_of_kind(chosen.names, "manifest"),
+        chosen.timestamp,
+    )
 
 
-def _missing_kinds(artefacts: dict[str, str]) -> list[str]:
+def _newest_complete(runs: list[BackupRun]) -> BackupRun | None:
+    for run in runs:
+        if run.complete:
+            return run
+    return None
+
+
+def _run_at(runs: list[BackupRun], timestamp: datetime) -> BackupRun | None:
+    for run in runs:
+        if run.timestamp == timestamp:
+            return run
+    return None
+
+
+def _missing_kinds(names: Sequence[str]) -> list[str]:
     """The artefact kinds a run doesn't have yet"""
-    return [kind for kind in _RUN_KINDS if kind not in artefacts]
+    kinds = {parse(name).kind for name in names}
+    return [kind for kind in _RUN_KINDS if kind not in kinds]
+
+
+def _name_of_kind(names: Sequence[str], kind: ArtefactKind) -> str:
+    """The filename of one kind in a complete run"""
+    for name in names:
+        if parse(name).kind == kind:
+            return name
+    raise BackupNotFound(f"no {kind} among {', '.join(names)}")

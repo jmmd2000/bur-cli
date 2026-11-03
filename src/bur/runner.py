@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from bur import crypto, dockerpg, manifest, naming, storage
+from bur import crypto, dockerpg, manifest, naming, retention, storage
 from bur.config import Config
 from bur.container import throwaway
 from bur.processes import RunningProcess
@@ -31,6 +31,7 @@ class BackupResult:
     """What one backup run produced"""
 
     app: str
+    timestamp: datetime
     dump_name: str
     globals_name: str
     manifest_name: str
@@ -101,7 +102,7 @@ def backup_database(
         )
 
     if dry_run:
-        return BackupResult(app, dump_name, globals_name, manifest_name, size, dry_run=True)
+        return BackupResult(app, when, dump_name, globals_name, manifest_name, size, dry_run=True)
 
     postgres_major = _read_postgres_major(container, db, user)
     table_count = len(_list_tables(container, db, user))
@@ -135,7 +136,31 @@ def backup_database(
             },
         ),
     )
-    return BackupResult(app, dump_name, globals_name, manifest_name, size, dry_run=False)
+    return BackupResult(app, when, dump_name, globals_name, manifest_name, size, dry_run=False)
+
+
+def prune(
+    config: Config, app: str, keep: int, newest: datetime, *, dry_run: bool = False
+) -> tuple[storage.BackupRun, ...]:
+    """Delete an app's backup runs that keep last N retention doesn't keep
+
+    :param config: Loaded configuration (backup root)
+    :param app: Application whose runs to prune
+    :param keep: How many complete runs to keep
+    :param newest: Timestamp of the run just written. A dry run writes nothing,
+        so it plans as if this run were stored and complete
+    :param dry_run: If true, plan but delete nothing
+    :returns: The runs deleted, or that would be deleted on a dry run, newest first
+    """
+    runs = storage.list_runs(config.backup_root, app)
+    if dry_run:
+        runs.append(storage.BackupRun(newest, (), complete=True))
+
+    plan = retention.plan_retention(runs, keep)
+    if not dry_run:
+        for run in plan.delete:
+            storage.delete_run(config.backup_root, app, run)
+    return plan.delete
 
 
 def restore_drill(

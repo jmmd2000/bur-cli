@@ -495,3 +495,41 @@ def test_drill_reports_the_restores_error_when_it_stops_reading(
     with pytest.raises(DockerCommandError, match="pg_restore: error: could not execute query"):
         runner.restore_drill(_config(root, recipient), "giftring", str(identity), "16", "giftring")
     assert events[-1] == "remove"
+
+
+def _store_run(root: Path, app: str, when: datetime, complete: bool = True) -> None:
+    """Write empty files standing in for one backup run."""
+    kinds: tuple[ArtefactKind, ...] = ("dump", "globals", "manifest")
+    if not complete:
+        kinds = ("dump",)
+    for kind in kinds:
+        with storage.atomic_write(root, app, build(app, when, kind)):
+            pass
+
+
+def test_prune_deletes_the_runs_retention_does_not_keep(tmp_path: Path) -> None:
+    root = tmp_path / "backups"
+    hours = [datetime(2026, 6, 3, hour, tzinfo=UTC) for hour in range(1, 5)]
+    _store_run(root, "app", hours[0], complete=False)
+    for when in hours[1:]:
+        _store_run(root, "app", when)
+
+    pruned = runner.prune(_config(root, "age1unused"), "app", 2, hours[3])
+
+    assert [run.timestamp for run in pruned] == [hours[1], hours[0]]
+    remaining = storage.list_runs(root, "app")
+    assert [run.timestamp for run in remaining] == [hours[3], hours[2]]
+
+
+def test_a_dry_run_prune_counts_the_run_about_to_be_written(tmp_path: Path) -> None:
+    root = tmp_path / "backups"
+    older = datetime(2026, 6, 3, 1, tzinfo=UTC)
+    newer = datetime(2026, 6, 3, 2, tzinfo=UTC)
+    pending = datetime(2026, 6, 3, 3, tzinfo=UTC)
+    _store_run(root, "app", older)
+    _store_run(root, "app", newer)
+
+    pruned = runner.prune(_config(root, "age1unused"), "app", 2, pending, dry_run=True)
+
+    assert [run.timestamp for run in pruned] == [older]
+    assert len(storage.list_runs(root, "app")) == 2

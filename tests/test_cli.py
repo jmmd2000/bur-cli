@@ -12,6 +12,7 @@ from bur.cli import app
 from bur.config import Config
 from bur.discovery import ContainerInfo, DBTarget, Discovered, DiscoveryError, LabelProblem
 from bur.runner import BackupError, BackupResult, DrillError, DrillResult
+from bur.storage import BackupRun
 
 _cli = CliRunner()
 
@@ -19,6 +20,7 @@ _cli = CliRunner()
 def _result(dry_run: bool = False) -> BackupResult:
     return BackupResult(
         app="giftring",
+        timestamp=datetime(2026, 6, 3, 17, 48, tzinfo=UTC),
         dump_name="giftring-20260603T174800Z.dump.age",
         globals_name="giftring-20260603T174800Z.globals.sql.age",
         manifest_name="giftring-20260603T174800Z.manifest.json",
@@ -37,8 +39,10 @@ def _patch_config(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _fake_backup(
-    calls: list[dict[str, object]], result: BackupResult
+    calls: list[dict[str, object]], failing_app: str | None = None
 ) -> Callable[..., BackupResult]:
+    """Record each backup call, and raise for ``failing_app``."""
+
     def fake(
         config: Config,
         app_name: str,
@@ -58,79 +62,179 @@ def _fake_backup(
                 "dry_run": dry_run,
             }
         )
-        return result
+        if app_name == failing_app:
+            raise BackupError(f"not enough free space for {app_name}")
+        return _result(dry_run)
 
     return fake
 
 
-def test_backup_defaults_container_db_and_user_to_the_app(
+def _patch_backup(
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _patch_config(monkeypatch)
-    calls: list[dict[str, object]] = []
-    monkeypatch.setattr(runner, "backup_database", _fake_backup(calls, _result()))
+    calls: list[dict[str, object]],
+    failing_app: str | None = None,
+    pruned: tuple[BackupRun, ...] = (),
+) -> list[dict[str, object]]:
+    """Fake the backup and the prune, and return the recorded prune calls."""
+    prune_calls: list[dict[str, object]] = []
 
-    outcome = _cli.invoke(app, ["backup", "--only", "giftring"])
+    def fake_prune(
+        config: Config, app_name: str, keep: int, newest: datetime, *, dry_run: bool = False
+    ) -> tuple[BackupRun, ...]:
+        prune_calls.append({"app": app_name, "keep": keep, "dry_run": dry_run})
+        return pruned
+
+    monkeypatch.setattr(runner, "backup_database", _fake_backup(calls, failing_app))
+    monkeypatch.setattr(runner, "prune", fake_prune)
+    return prune_calls
+
+
+def test_backup_backs_up_every_discovered_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    _patch_discover(monkeypatch, Discovered([_target("giftring"), _target("issues")], []))
+    calls: list[dict[str, object]] = []
+    _patch_backup(monkeypatch, calls)
+
+    outcome = _cli.invoke(app, ["backup"])
 
     assert outcome.exit_code == 0
-    assert calls == [
-        {
-            "app": "giftring",
-            "container": "giftring",
-            "db": "giftring",
-            "user": "giftring",
-            "dry_run": False,
-        }
-    ]
+    assert [call["app"] for call in calls] == ["giftring", "issues"]
+    assert calls[0] == {
+        "app": "giftring",
+        "container": "giftring-db-1",
+        "db": "gift",
+        "user": "gift_owner",
+        "dry_run": False,
+    }
 
 
-def test_backup_accepts_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_one_failed_backup_does_not_stop_the_rest(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_config(monkeypatch)
+    _patch_discover(monkeypatch, Discovered([_target("giftring"), _target("issues")], []))
     calls: list[dict[str, object]] = []
-    monkeypatch.setattr(runner, "backup_database", _fake_backup(calls, _result()))
+    _patch_backup(monkeypatch, calls, failing_app="giftring")
 
-    outcome = _cli.invoke(
-        app,
-        [
-            "backup",
-            "--only",
-            "giftring",
-            "--container",
-            "giftring-db",
-            "--db",
-            "gift",
-            "--user",
-            "postgres",
-        ],
+    outcome = _cli.invoke(app, ["backup"])
+
+    assert outcome.exit_code == 1
+    assert [call["app"] for call in calls] == ["giftring", "issues"]
+
+
+def test_backup_skips_an_excluded_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    _patch_discover(
+        monkeypatch, Discovered([_target("giftring", excluded=True), _target("issues")], [])
     )
+    calls: list[dict[str, object]] = []
+    _patch_backup(monkeypatch, calls)
+
+    outcome = _cli.invoke(app, ["backup"])
 
     assert outcome.exit_code == 0
-    assert calls[0]["container"] == "giftring-db"
-    assert calls[0]["db"] == "gift"
-    assert calls[0]["user"] == "postgres"
+    assert [call["app"] for call in calls] == ["issues"]
+
+
+def test_a_label_problem_fails_a_full_backup(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    problem = LabelProblem("broken-db-1", "bur.app is required")
+    _patch_discover(monkeypatch, Discovered([_target("issues")], [problem]))
+    calls: list[dict[str, object]] = []
+    _patch_backup(monkeypatch, calls)
+
+    outcome = _cli.invoke(app, ["backup"])
+
+    assert outcome.exit_code == 1
+    assert [call["app"] for call in calls] == ["issues"]
+
+
+def test_only_backs_up_the_named_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    problem = LabelProblem("broken-db-1", "bur.app is required")
+    _patch_discover(monkeypatch, Discovered([_target("giftring"), _target("issues")], [problem]))
+    calls: list[dict[str, object]] = []
+    _patch_backup(monkeypatch, calls)
+
+    outcome = _cli.invoke(app, ["backup", "--only", "issues"])
+
+    assert outcome.exit_code == 0
+    assert [call["app"] for call in calls] == ["issues"]
+
+
+@pytest.mark.parametrize("excluded", [False, True])
+def test_only_fails_without_a_usable_match(monkeypatch: pytest.MonkeyPatch, excluded: bool) -> None:
+    _patch_config(monkeypatch)
+    _patch_discover(monkeypatch, Discovered([_target("giftring", excluded=excluded)], []))
+    calls: list[dict[str, object]] = []
+    _patch_backup(monkeypatch, calls)
+
+    target_app = "giftring" if excluded else "missing"
+    outcome = _cli.invoke(app, ["backup", "--only", target_app])
+
+    assert outcome.exit_code == 1
+    assert calls == []
 
 
 def test_dry_run_reports_what_it_would_write(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_config(monkeypatch)
+    _patch_discover(monkeypatch, Discovered([_target("giftring")], []))
     calls: list[dict[str, object]] = []
-    monkeypatch.setattr(runner, "backup_database", _fake_backup(calls, _result(dry_run=True)))
+    _patch_backup(monkeypatch, calls)
 
-    outcome = _cli.invoke(app, ["backup", "--only", "giftring", "--dry-run"])
+    outcome = _cli.invoke(app, ["backup", "--dry-run"])
 
     assert outcome.exit_code == 0
     assert calls[0]["dry_run"] is True
     assert "would write" in outcome.output
 
 
-def test_a_failed_backup_exits_non_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_backup_prunes_each_app_it_backed_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    _patch_discover(monkeypatch, Discovered([_target("giftring"), _target("issues")], []))
+    calls: list[dict[str, object]] = []
+    prune_calls = _patch_backup(monkeypatch, calls, failing_app="giftring")
+
+    outcome = _cli.invoke(app, ["backup", "--dry-run"])
+
+    assert outcome.exit_code == 1
+    assert prune_calls == [{"app": "issues", "keep": 3, "dry_run": True}]
+
+
+def test_backup_lists_the_runs_it_pruned(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    _patch_discover(monkeypatch, Discovered([_target("giftring")], []))
+    old_run = BackupRun(datetime(2026, 1, 1, tzinfo=UTC), (), complete=True)
+    _patch_backup(monkeypatch, [], pruned=(old_run,))
+
+    outcome = _cli.invoke(app, ["backup"])
+
+    assert outcome.exit_code == 0
+    assert "20260101T000000Z" in outcome.output
+
+
+def test_a_failed_prune_fails_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    _patch_discover(monkeypatch, Discovered([_target("giftring")], []))
+    _patch_backup(monkeypatch, [])
+
+    def fail(*args: object, **kwargs: object) -> tuple[BackupRun, ...]:
+        raise PermissionError("permission denied")
+
+    monkeypatch.setattr(runner, "prune", fail)
+
+    outcome = _cli.invoke(app, ["backup"])
+
+    assert outcome.exit_code == 1
+
+
+def test_backup_exits_non_zero_when_docker_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_config(monkeypatch)
 
-    def fail(*args: object, **kwargs: object) -> BackupResult:
-        raise BackupError("not enough free space for giftring")
+    def fail(config: Config) -> Discovered:
+        raise DiscoveryError("cannot connect to the Docker daemon")
 
-    monkeypatch.setattr(runner, "backup_database", fail)
+    monkeypatch.setattr(discovery, "discover", fail)
 
-    outcome = _cli.invoke(app, ["backup", "--only", "giftring"])
+    outcome = _cli.invoke(app, ["backup"])
 
     assert outcome.exit_code == 1
 

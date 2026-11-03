@@ -184,3 +184,49 @@ def test_find_backup_pair_raises_when_no_run_is_complete(tmp_path: Path) -> None
 
     with pytest.raises(storage.BackupNotFound, match="no complete backup"):
         storage.find_backup_pair(tmp_path, "app")
+
+
+def test_list_runs_groups_files_by_timestamp_newest_first(tmp_path: Path) -> None:
+    older = datetime(2026, 1, 1, tzinfo=UTC)
+    newer = datetime(2026, 2, 1, tzinfo=UTC)
+    _write_pair(tmp_path, "app", older)
+    storage.write(tmp_path, "app", build("app", newer, "dump"), io.BytesIO(b"payload"))
+
+    runs = storage.list_runs(tmp_path, "app")
+
+    assert [run.timestamp for run in runs] == [newer, older]
+    assert runs[0].names == (build("app", newer, "dump"),)
+    assert runs[0].complete is False
+    assert len(runs[1].names) == 3
+    assert runs[1].complete is True
+
+
+def test_delete_run_removes_every_file_of_the_run(tmp_path: Path) -> None:
+    older = datetime(2026, 1, 1, tzinfo=UTC)
+    newer = datetime(2026, 2, 1, tzinfo=UTC)
+    _write_pair(tmp_path, "app", older)
+    _write_pair(tmp_path, "app", newer)
+    older_run = storage.list_runs(tmp_path, "app")[1]
+
+    storage.delete_run(tmp_path, "app", older_run)
+
+    assert [run.timestamp for run in storage.list_runs(tmp_path, "app")] == [newer]
+
+
+def test_delete_run_removes_the_manifest_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_pair(tmp_path, "app", datetime(2026, 1, 1, tzinfo=UTC))
+    run = storage.list_runs(tmp_path, "app")[0]
+    deleted: list[str] = []
+    real_unlink = Path.unlink
+
+    def recording_unlink(path: Path, missing_ok: bool = False) -> None:
+        deleted.append(path.name)
+        real_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", recording_unlink)
+
+    storage.delete_run(tmp_path, "app", run)
+
+    assert deleted[0].endswith(".manifest.json")

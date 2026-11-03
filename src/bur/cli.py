@@ -12,10 +12,10 @@ from bur import discovery, runner
 from bur.config import Config, ConfigError, load_config
 from bur.container import ContainerError
 from bur.crypto import CryptoError
-from bur.discovery import DiscoveryError
+from bur.discovery import DBTarget, DiscoveryError, LabelProblem
 from bur.dockerpg import DockerCommandError
 from bur.manifest import ManifestError
-from bur.naming import InvalidBackupName, parse_timestamp
+from bur.naming import InvalidBackupName, format_timestamp, parse_timestamp
 from bur.runner import BackupError, DrillError
 from bur.storage import BackupNotFound
 
@@ -38,15 +38,8 @@ def _load_config_or_exit(config_path: Path | None) -> Config:
 
 @app.command()
 def backup(
-    only: Annotated[str, typer.Option("--only", help="Application to back up")],
-    container: Annotated[
-        str | None, typer.Option(help="Container running the database, defaults to the app name")
-    ] = None,
-    db: Annotated[
-        str | None, typer.Option(help="Database to dump, defaults to the app name")
-    ] = None,
-    user: Annotated[
-        str | None, typer.Option(help="Role to connect as, defaults to the app name")
+    only: Annotated[
+        str | None, typer.Option("--only", help="Back up only this app, defaults to every app")
     ] = None,
     config_path: Annotated[
         Path | None, typer.Option("--config", help="Path to bur.toml, defaults to $BUR_CONFIG")
@@ -55,19 +48,87 @@ def backup(
         bool, typer.Option("--dry-run", help="Check space and report, but write nothing")
     ] = False,
 ) -> None:
-    """Back up one database to encrypted local files"""
+    """Back up every discovered database to encrypted local files"""
     config = _load_config_or_exit(config_path)
 
     try:
-        result = runner.backup_database(
-            config, only, container or only, db or only, user or only, dry_run=dry_run
-        )
-    except (BackupError, CryptoError, DockerCommandError) as error:
-        typer.secho(f"backup failed: {error}", fg=typer.colors.RED, err=True)
+        discovered = discovery.discover(config)
+    except DiscoveryError as error:
+        typer.secho(f"discovery failed: {error}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from error
 
+    if only is None:
+        targets = discovered.targets
+        failures = len(discovered.problems)
+        for problem in discovered.problems:
+            typer.secho(f"{problem.container}: {problem.problem}", fg=typer.colors.RED, err=True)
+    else:
+        targets = [target for target in discovered.targets if target.app == only]
+        failures = 0
+        _check_only_target(only, targets, discovered.problems)
+
+    if not targets and failures == 0:
+        typer.echo("no databases have opted in")
+        return
+
+    for target in targets:
+        if target.excluded:
+            typer.echo(f"{target.app}: excluded, skipped")
+            continue
+        if not _back_up_target(config, target, dry_run):
+            failures += 1
+
+    if failures:
+        typer.secho(f"{failures} problem(s) found", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+
+def _check_only_target(only: str, targets: list[DBTarget], problems: list[LabelProblem]) -> None:
+    """Exit unless ``--only`` matches one discovered database that isn't excluded"""
+    if not targets:
+        typer.secho(f"no discovered database has app {only}", fg=typer.colors.RED, err=True)
+        for problem in problems:
+            typer.secho(f"{problem.container}: {problem.problem}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    if all(target.excluded for target in targets):
+        typer.secho(f"{only} is excluded in the config", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+
+def _back_up_target(config: Config, target: DBTarget, dry_run: bool) -> bool:
+    """Back up one database, prune its old runs, and print the outcome
+
+    :returns: True if the backup and the prune both succeeded
+    """
+    try:
+        result = runner.backup_database(
+            config, target.app, target.container, target.database, target.user, dry_run=dry_run
+        )
+    except (BackupError, CryptoError, DockerCommandError, OSError) as error:
+        typer.secho(f"{target.app}: backup failed, {error}", fg=typer.colors.RED, err=True)
+        return False
+
     verb = "would write" if result.dry_run else "wrote"
-    typer.echo(f"{verb} {result.dump_name}, {result.globals_name} and {result.manifest_name}")
+    typer.echo(
+        f"{target.app}: {verb} {result.dump_name}, {result.globals_name} and {result.manifest_name}"
+    )
+
+    try:
+        pruned = runner.prune(
+            config, target.app, target.keep_last, result.timestamp, dry_run=dry_run
+        )
+    except OSError as error:
+        typer.secho(
+            f"{target.app}: backed up, but the prune failed, {error}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        return False
+
+    verb = "would prune" if dry_run else "pruned"
+    for run in pruned:
+        typer.echo(f"{target.app}: {verb} the backup from {format_timestamp(run.timestamp)}")
+    return True
 
 
 @app.command()

@@ -3,7 +3,8 @@
 Backup names the files for a run, checks there's room for the dump, then
 streams the dump and the cluster globals through age into atomic writes under
 ``<backup_root>/<app>/``. It writes the run's manifest last. The drill restores
-a stored pair into a throwaway container and counts what came back.
+a stored pair into a throwaway container, counts what came back and checks it
+against the manifest.
 """
 
 from __future__ import annotations
@@ -55,6 +56,7 @@ class DrillResult:
     dump_name: str
     globals_name: str
     timestamp: datetime
+    major: str
     row_counts: dict[str, int]
 
 
@@ -140,7 +142,7 @@ def restore_drill(
     config: Config,
     app: str,
     identity: str,
-    major: str,
+    major: str | None,
     db: str,
     *,
     timestamp: datetime | None = None,
@@ -148,21 +150,27 @@ def restore_drill(
     """Restore a stored backup into a throwaway container and verify
 
     Applies the cluster globals, then the dump, then counts the rows in every
-    restored table.
+    restored table and checks the number of tables against the run's manifest.
 
     :param config: Loaded configuration (backup root)
     :param app: Application whose backup to drill
     :param identity: Path to the age identity file
-    :param major: Postgres major version for the throwaway container
+    :param major: Postgres major version for the throwaway container, or None for
+        the version the manifest records
     :param db: Database name to restore into
     :param timestamp: Backup to drill, defaults to the newest
     :returns: What the drill restored
-    :raises DrillError: If no tables were restored, or every table is empty
+    :raises DrillError: If no tables were restored, the number of tables differs from
+        the manifest, or every table is empty
+    :raises ManifestError: If the run's manifest cannot be read
     """
     pair = storage.find_backup_pair(config.backup_root, app, timestamp)
+    recorded = manifest.read(config.backup_root, app, pair.manifest_name)
+    expected_tables = _recorded_table_count(recorded, pair.dump_name)
+    image_major = major or str(recorded.postgres_major)
     password = secrets.token_hex(16)
 
-    with throwaway(f"postgres:{major}", _DRILL_SUPERUSER, password, db) as name:
+    with throwaway(f"postgres:{image_major}", _DRILL_SUPERUSER, password, db) as name:
         _restore_artefact(
             config.backup_root,
             app,
@@ -181,10 +189,25 @@ def restore_drill(
 
     if not row_counts:
         raise DrillError(f"{app} restored no tables")
+    if len(row_counts) != expected_tables:
+        raise DrillError(
+            f"{app} restored {len(row_counts)} tables but the manifest records "
+            f"{expected_tables}. A schema change while the backup ran can also cause this"
+        )
     if not any(row_counts.values()):
         raise DrillError(f"{app} restored {len(row_counts)} tables, all of them empty")
 
-    return DrillResult(app, pair.dump_name, pair.globals_name, pair.timestamp, row_counts)
+    return DrillResult(
+        app, pair.dump_name, pair.globals_name, pair.timestamp, image_major, row_counts
+    )
+
+
+def _recorded_table_count(recorded: manifest.Manifest, dump_name: str) -> int:
+    """Find the table count the manifest records for one dump"""
+    for database in recorded.databases.values():
+        if database.dump.file == dump_name:
+            return database.table_count
+    raise DrillError(f"the manifest for {recorded.app} does not list {dump_name}")
 
 
 def _readable_size(size: int) -> str:

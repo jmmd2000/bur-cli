@@ -350,6 +350,40 @@ def test_drill_restores_globals_then_the_dump(
     assert result.timestamp == when
 
 
+def test_drill_defaults_to_the_recorded_major(
+    keypair: tuple[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recipient, identity = keypair
+    root = tmp_path / "backups"
+    _store_pair(root, "giftring", datetime(2026, 6, 3, tzinfo=UTC), recipient, tmp_path)
+
+    events: list[str] = []
+    _patch_drill(monkeypatch, events, ["public.widgets"], 100)
+
+    result = runner.restore_drill(
+        _config(root, recipient), "giftring", str(identity), None, "giftring"
+    )
+
+    assert events[0] == "start postgres:17"
+    assert result.major == "17"
+
+
+def test_drill_fails_when_the_table_count_differs_from_the_manifest(
+    keypair: tuple[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recipient, identity = keypair
+    root = tmp_path / "backups"
+    when = datetime(2026, 6, 3, tzinfo=UTC)
+    _store_pair(root, "giftring", when, recipient, tmp_path, table_count=3)
+
+    events: list[str] = []
+    _patch_drill(monkeypatch, events, ["public.widgets", "public.orders"], 100)
+
+    with pytest.raises(DrillError, match="manifest"):
+        runner.restore_drill(_config(root, recipient), "giftring", str(identity), "16", "giftring")
+    assert events[-1] == "remove"
+
+
 def test_drill_drills_a_specific_backup(
     keypair: tuple[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -141,6 +141,7 @@ def _drill_result() -> DrillResult:
         dump_name="giftring-20260603T174800Z.dump.age",
         globals_name="giftring-20260603T174800Z.globals.sql.age",
         timestamp=datetime(2026, 6, 3, 17, 48, tzinfo=UTC),
+        major="16",
         row_counts={"public.widgets": 100},
     )
 
@@ -150,7 +151,7 @@ def _fake_drill(calls: list[dict[str, object]], result: DrillResult) -> Callable
         config: Config,
         app_name: str,
         identity: str,
-        major: str,
+        major: str | None,
         db: str,
         *,
         timestamp: datetime | None = None,
@@ -193,6 +194,19 @@ def test_restore_drills_the_named_app(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls[0]["db"] == "giftring"
     assert calls[0]["major"] == "16"
     assert calls[0]["timestamp"] is None
+
+
+def test_restore_leaves_the_major_to_the_manifest(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(runner, "restore_drill", _fake_drill(calls, _drill_result()))
+
+    outcome = _cli.invoke(
+        app, ["restore", "giftring", "--identity", "key.txt", "--drill", "--latest"]
+    )
+
+    assert outcome.exit_code == 0
+    assert calls[0]["major"] is None
 
 
 def test_restore_accepts_a_date(monkeypatch: pytest.MonkeyPatch) -> None:

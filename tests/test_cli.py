@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -11,7 +12,9 @@ from bur import cli, discovery, runner
 from bur.cli import app
 from bur.config import Config
 from bur.discovery import ContainerInfo, DBTarget, Discovered, DiscoveryError, LabelProblem
+from bur.health import Health, HealthLevel
 from bur.runner import BackupError, BackupResult, DrillError, DrillResult
+from bur.status import DatabaseStatus
 from bur.storage import BackupRun
 
 _cli = CliRunner()
@@ -526,3 +529,83 @@ def test_check_does_not_probe_an_excluded_database(monkeypatch: pytest.MonkeyPat
 
     assert outcome.exit_code == 0
     assert probed == []
+
+
+def _patch_status(
+    monkeypatch: pytest.MonkeyPatch, levels: dict[str, HealthLevel], undiscovered: list[str]
+) -> None:
+    """Fake each app's health by name, and the undiscovered folders."""
+
+    def fake_status(config: Config, target: DBTarget, now: datetime) -> DatabaseStatus:
+        level = levels[target.app]
+        if level == "never":
+            return DatabaseStatus(target, Health("never", None, None), None)
+        last_success = now - timedelta(hours=5)
+        health = Health(level, last_success, timedelta(hours=5))
+        return DatabaseStatus(target, health, 4096)
+
+    def fake_undiscovered(config: Config, discovered: object) -> list[str]:
+        return undiscovered
+
+    monkeypatch.setattr(cli, "database_status", fake_status)
+    monkeypatch.setattr(cli, "undiscovered_apps", fake_undiscovered)
+
+
+def test_status_passes_when_every_database_is_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    _patch_discover(monkeypatch, Discovered([_target("giftring"), _target("issues")], []))
+    _patch_status(monkeypatch, {"giftring": "ok", "issues": "ok"}, ["old-blog"])
+
+    outcome = _cli.invoke(app, ["status"])
+
+    assert outcome.exit_code == 0
+    assert "old-blog" in outcome.output
+
+
+@pytest.mark.parametrize("level", ["overdue", "never"])
+def test_status_fails_when_a_database_is_not_ok(
+    monkeypatch: pytest.MonkeyPatch, level: HealthLevel
+) -> None:
+    _patch_config(monkeypatch)
+    _patch_discover(monkeypatch, Discovered([_target("giftring"), _target("issues")], []))
+    _patch_status(monkeypatch, {"giftring": "ok", "issues": level}, [])
+
+    outcome = _cli.invoke(app, ["status"])
+
+    assert outcome.exit_code == 1
+
+
+def test_status_ignores_an_excluded_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    _patch_discover(monkeypatch, Discovered([_target("giftring", excluded=True)], []))
+    _patch_status(monkeypatch, {"giftring": "never"}, [])
+
+    outcome = _cli.invoke(app, ["status"])
+
+    assert outcome.exit_code == 0
+
+
+def test_status_fails_on_a_label_problem(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    problem = LabelProblem("broken-db-1", "bur.schedule must be hourly, daily, weekly")
+    _patch_discover(monkeypatch, Discovered([_target("giftring")], [problem]))
+    _patch_status(monkeypatch, {"giftring": "ok"}, [])
+
+    outcome = _cli.invoke(app, ["status"])
+
+    assert outcome.exit_code == 1
+
+
+def test_status_prints_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    _patch_discover(monkeypatch, Discovered([_target("giftring"), _target("issues")], []))
+    _patch_status(monkeypatch, {"giftring": "ok", "issues": "never"}, ["old-blog"])
+
+    outcome = _cli.invoke(app, ["status", "--json"])
+
+    content = json.loads(outcome.stdout)
+    assert outcome.exit_code == 1
+    assert [database["health"] for database in content["databases"]] == ["ok", "never"]
+    assert content["databases"][0]["age_seconds"] == 5 * 3600
+    assert content["databases"][1]["last_success"] is None
+    assert content["undiscovered"] == ["old-blog"]

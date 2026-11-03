@@ -186,6 +186,23 @@ def list_runs(root: Path, app: str) -> list[BackupRun]:
     return runs
 
 
+def delete_run(root: Path, app: str, run: BackupRun) -> None:
+    """Delete every stored file of one backup run
+
+    Deletes the manifest first, so a run that is only partly deleted reads as incomplete.
+
+    :param root: Backup root directory
+    :param app: Application the run belongs to
+    :param run: The run to delete
+    """
+    directory = root / app
+    for name in run.names:
+        if parse(name).kind == "manifest":
+            (directory / name).unlink(missing_ok=True)
+    for name in run.names:
+        (directory / name).unlink(missing_ok=True)
+
+
 def find_backup_pair(root: Path, app: str, timestamp: datetime | None = None) -> BackupPair:
     """Find one complete run's dump, globals and manifest
 

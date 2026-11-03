@@ -188,7 +188,7 @@ def find_backup_pair(root: Path, app: str, timestamp: datetime | None = None) ->
     missing = _missing_kinds(artefacts)
     if missing:
         raise BackupNotFound(
-            f"backup for {app} at {chosen.isoformat()} is missing its {'and'.join(missing)}"
+            f"backup for {app} at {chosen.isoformat()} is missing its {' and '.join(missing)}"
         )
     return BackupPair(artefacts["dump"], artefacts["globals"], chosen)
 

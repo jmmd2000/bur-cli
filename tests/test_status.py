@@ -8,7 +8,7 @@ from bur import storage
 from bur.config import Config
 from bur.discovery import DBTarget
 from bur.naming import ArtefactKind, build
-from bur.status import database_status, undiscovered_apps
+from bur.status import app_runs, database_status, undiscovered_apps
 
 _NOW = datetime(2026, 6, 3, 12, 0, tzinfo=UTC)
 
@@ -66,3 +66,17 @@ def test_undiscovered_apps_are_the_other_folders(tmp_path: Path) -> None:
 
 def test_undiscovered_apps_is_empty_without_a_backup_root(tmp_path: Path) -> None:
     assert undiscovered_apps(_config(tmp_path / "missing"), set()) == []
+
+
+def test_app_runs_lists_every_run_newest_first(tmp_path: Path) -> None:
+    older = _NOW - timedelta(days=1)
+    newer = _NOW - timedelta(hours=1)
+    _store_run(tmp_path, "giftring", older, b"x" * 300)
+    _store_run(tmp_path, "giftring", newer, b"y" * 20, complete=False)
+
+    runs = app_runs(_config(tmp_path), "giftring")
+
+    assert [(run.timestamp, run.complete, run.dump_size) for run in runs] == [
+        (newer, False, 20),
+        (older, True, 300),
+    ]

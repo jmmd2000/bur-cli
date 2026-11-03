@@ -18,7 +18,7 @@ from bur.dockerpg import DockerCommandError
 from bur.manifest import ManifestError
 from bur.naming import InvalidBackupName, format_timestamp, parse_timestamp
 from bur.runner import BackupError, DrillError
-from bur.status import DatabaseStatus, database_status, undiscovered_apps
+from bur.status import DatabaseStatus, app_runs, database_status, undiscovered_apps
 from bur.storage import BackupNotFound
 from bur.units import readable_age, readable_size
 
@@ -211,6 +211,10 @@ def restore(
 
 @app.command()
 def status(
+    app_name: Annotated[
+        str | None,
+        typer.Argument(metavar="APP", help="List every backup run for this app instead"),
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Print the status as JSON")] = False,
     config_path: Annotated[
         Path | None, typer.Option("--config", help="Path to bur.toml, defaults to $BUR_CONFIG")
@@ -218,6 +222,10 @@ def status(
 ) -> None:
     """Show whether each discovered database has a recent backup"""
     config = _load_config_or_exit(config_path)
+
+    if app_name is not None:
+        _print_app_runs(config, app_name, json_output)
+        return
 
     try:
         discovered = discovery.discover(config)
@@ -240,6 +248,36 @@ def status(
         if not database.target.excluded and database.health.level != "ok"
     ]
     if unhealthy or discovered.problems:
+        raise typer.Exit(code=1)
+
+
+def _print_app_runs(config: Config, app_name: str, json_output: bool) -> None:
+    """Print every stored backup run for one app, exiting 1 if it has none"""
+    runs = app_runs(config, app_name)
+
+    if json_output:
+        content = {
+            "app": app_name,
+            "runs": [
+                {
+                    "timestamp": format_timestamp(run.timestamp),
+                    "complete": run.complete,
+                    "dump_size": run.dump_size,
+                }
+                for run in runs
+            ],
+        }
+        typer.echo(json.dumps(content, indent=2))
+    else:
+        if runs:
+            typer.echo(f"{'TIMESTAMP':<18} {'COMPLETE':<9} SIZE")
+        for run in runs:
+            size = readable_size(run.dump_size) if run.dump_size is not None else "-"
+            complete = "yes" if run.complete else "no"
+            typer.echo(f"{format_timestamp(run.timestamp):<18} {complete:<9} {size}")
+
+    if not runs:
+        typer.secho(f"no backups for {app_name}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
 

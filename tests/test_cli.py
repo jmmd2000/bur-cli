@@ -14,7 +14,7 @@ from bur.config import Config
 from bur.discovery import ContainerInfo, DBTarget, Discovered, DiscoveryError, LabelProblem
 from bur.health import Health, HealthLevel
 from bur.runner import BackupError, BackupResult, DrillError, DrillResult
-from bur.status import DatabaseStatus
+from bur.status import DatabaseStatus, RunSummary
 from bur.storage import BackupRun
 
 _cli = CliRunner()
@@ -609,3 +609,26 @@ def test_status_prints_json(monkeypatch: pytest.MonkeyPatch) -> None:
     assert content["databases"][0]["age_seconds"] == 5 * 3600
     assert content["databases"][1]["last_success"] is None
     assert content["undiscovered"] == ["old-blog"]
+
+
+def test_status_app_lists_its_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    run = RunSummary(datetime(2026, 6, 3, 17, 48, tzinfo=UTC), True, 4096)
+    monkeypatch.setattr(cli, "app_runs", lambda config, app_name: [run])
+
+    outcome = _cli.invoke(app, ["status", "giftring", "--json"])
+
+    assert outcome.exit_code == 0
+    content = json.loads(outcome.stdout)
+    assert content["runs"] == [
+        {"timestamp": "20260603T174800Z", "complete": True, "dump_size": 4096}
+    ]
+
+
+def test_status_app_fails_when_it_has_no_backups(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    monkeypatch.setattr(cli, "app_runs", lambda config, app_name: [])
+
+    outcome = _cli.invoke(app, ["status", "giftring"])
+
+    assert outcome.exit_code == 1

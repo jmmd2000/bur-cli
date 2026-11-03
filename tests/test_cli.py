@@ -21,6 +21,7 @@ def _result(dry_run: bool = False) -> BackupResult:
         app="giftring",
         dump_name="giftring-20260603T174800Z.dump.age",
         globals_name="giftring-20260603T174800Z.globals.sql.age",
+        manifest_name="giftring-20260603T174800Z.manifest.json",
         database_size=4096,
         dry_run=dry_run,
     )

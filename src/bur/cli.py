@@ -66,7 +66,7 @@ def backup(
         raise typer.Exit(code=1) from error
 
     verb = "would write" if result.dry_run else "wrote"
-    typer.echo(f"{verb} {result.dump_name} and {result.globals_name}")
+    typer.echo(f"{verb} {result.dump_name}, {result.globals_name} and {result.manifest_name}")
 
 
 @app.command()

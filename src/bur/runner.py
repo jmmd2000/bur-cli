@@ -1,9 +1,9 @@
 """Back up one database to encrypted local files, and carry out a restore drill
 
-Backup names the two artefacts for a run, checks there's room for the dump,
-then streams the dump and the cluster globals through age into atomic writes
-under ``<backup_root>/<app>/``. The drill restores a stored pair into a
-throwaway container and counts what came back.
+Backup names the files for a run, checks there's room for the dump, then
+streams the dump and the cluster globals through age into atomic writes under
+``<backup_root>/<app>/``. It writes the run's manifest last. The drill restores
+a stored pair into a throwaway container and counts what came back.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from bur import crypto, dockerpg, naming, storage
+from bur import crypto, dockerpg, manifest, naming, storage
 from bur.config import Config
 from bur.container import throwaway
 from bur.processes import RunningProcess
@@ -32,6 +32,7 @@ class BackupResult:
     app: str
     dump_name: str
     globals_name: str
+    manifest_name: str
     database_size: int
     dry_run: bool
 
@@ -39,6 +40,7 @@ class BackupResult:
 _DRILL_SUPERUSER = "drillsuper"
 _BYTES_PER_MB = 1024**2
 _BYTES_PER_GB = 1024**3
+_VERSION_NUMBERS_PER_MAJOR = 10000
 
 
 class DrillError(RuntimeError):
@@ -68,8 +70,8 @@ def backup_database(
 ) -> BackupResult:
     """Back up one database to encrypted local files
 
-    Creates two artefacts that share one timestamp: the dump
-    and the cluster globals it needs to be usable.
+    Creates three files that share one timestamp: the dump, the cluster
+    globals it needs to be usable, and then the manifest that records both.
 
     :param config: Loaded configuration (backup root and age recipients)
     :param app: Application the backup belongs to, names the artefacts
@@ -84,6 +86,7 @@ def backup_database(
     when = now or datetime.now(UTC)
     dump_name = naming.build(app, when, "dump")
     globals_name = naming.build(app, when, "globals")
+    manifest_name = naming.build(app, when, "manifest")
 
     size = _read_database_size(container, db, user)
     free = storage.free_space(config.backup_root)
@@ -96,7 +99,10 @@ def backup_database(
         )
 
     if dry_run:
-        return BackupResult(app, dump_name, globals_name, size, dry_run=True)
+        return BackupResult(app, dump_name, globals_name, manifest_name, size, dry_run=True)
+
+    postgres_major = _read_postgres_major(container, db, user)
+    table_count = len(_list_tables(container, db, user))
 
     _encrypt_to_file(
         dockerpg.dump(container, db, user),
@@ -112,7 +118,22 @@ def backup_database(
         app,
         globals_name,
     )
-    return BackupResult(app, dump_name, globals_name, size, dry_run=False)
+    manifest.write(
+        config.backup_root,
+        manifest.Manifest(
+            app=app,
+            timestamp=when,
+            postgres_major=postgres_major,
+            globals=manifest.record_artefact(config.backup_root, app, globals_name),
+            databases={
+                db: manifest.DatabaseRecord(
+                    dump=manifest.record_artefact(config.backup_root, app, dump_name),
+                    table_count=table_count,
+                )
+            },
+        ),
+    )
+    return BackupResult(app, dump_name, globals_name, manifest_name, size, dry_run=False)
 
 
 def restore_drill(
@@ -182,6 +203,15 @@ def _read_database_size(container: str, db: str, user: str) -> int:
         raise BackupError(f"could not read database size, got {raw!r}") from error
 
 
+def _read_postgres_major(container: str, db: str, user: str) -> int:
+    """Read the server's Postgres major version, e.g. 16 for 16.4"""
+    raw = _read_output(dockerpg.server_version(container, db, user))
+    try:
+        return int(raw) // _VERSION_NUMBERS_PER_MAJOR
+    except ValueError as error:
+        raise BackupError(f"could not read the Postgres version, got {raw!r}") from error
+
+
 def _encrypt_to_file(
     source: RunningProcess,
     recipients: Sequence[str],
@@ -234,13 +264,16 @@ def _pipe(source: RunningProcess, target: RunningProcess) -> None:
         dockerpg.check(target)
 
 
+def _list_tables(container: str, db: str, user: str) -> list[str]:
+    """List a db's user tables"""
+    listing = _read_output(dockerpg.table_names(container, db, user))
+    return [line.strip() for line in listing.splitlines() if line.strip()]
+
+
 def _count_every_table(container: str, db: str, user: str) -> dict[str, int]:
     """Count the rows in each of a db's user tables"""
-    listing = _read_output(dockerpg.table_names(container, db, user))
-    tables = [line.strip() for line in listing.splitlines() if line.strip()]
-
     row_counts: dict[str, int] = {}
-    for table in tables:
+    for table in _list_tables(container, db, user):
         counted = _read_output(dockerpg.count_rows(container, db, user, table))
         row_counts[table] = int(counted)
     return row_counts

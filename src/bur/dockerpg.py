@@ -20,7 +20,7 @@ from bur.processes import RunningProcess
 _PGPASSWORD_PREFIX = 'PGPASSWORD="${POSTGRES_PASSWORD:-}"'
 _TABLE_NAMES_SQL = (
     "SELECT quote_ident(schemaname) || '.' || quote_ident(relname) "
-    "FROM pg_stat_user_tables ORDER BY 1"
+    "FROM pg_stat_user_tables WHERE schemaname NOT LIKE 'pg\\_temp\\_%' ORDER BY 1"
 )
 
 
@@ -79,6 +79,21 @@ def database_size(container: str, db: str, user: str) -> RunningProcess:
         f"psql -tAc 'SELECT pg_database_size(current_database())' "
         f"-U {shlex.quote(user)} -d {shlex.quote(db)}"
     )
+    command = _exec_command(container, inner)
+    return processes.start(command, stdout=subprocess.PIPE)
+
+
+def server_version(container: str, db: str, user: str) -> RunningProcess:
+    """Query the server's version number, streamed to stdout
+
+    Reports ``server_version_num``, e.g. ``160004`` for 16.4.
+
+    :param container: Container running the database
+    :param db: Database to connect to
+    :param user: Role to connect as
+    :returns: The running process, the version number on ``stdout``
+    """
+    inner = f"psql -tAc 'SHOW server_version_num' -U {shlex.quote(user)} -d {shlex.quote(db)}"
     command = _exec_command(container, inner)
     return processes.start(command, stdout=subprocess.PIPE)
 

@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from bur.health import evaluate
+from bur.health import evaluate, is_due, next_due
 
 _NOW = datetime(2026, 6, 3, 12, 0, tzinfo=UTC)
 _DAILY = timedelta(days=1)
@@ -30,3 +30,23 @@ def test_a_backup_is_overdue_after_its_interval_plus_the_grace(age: timedelta, l
 
     assert health.level == level
     assert health.age == age
+
+
+def test_a_database_with_no_backup_is_due() -> None:
+    assert is_due(None, _DAILY, _NOW) is True
+
+
+@pytest.mark.parametrize(
+    ("age", "due"),
+    [
+        (timedelta(hours=21, minutes=36), False),
+        (timedelta(hours=21, minutes=36, seconds=1), True),
+        (timedelta(hours=23, minutes=59, seconds=57), True),
+    ],
+)
+def test_a_backup_is_due_after_90_percent_of_its_interval(age: timedelta, due: bool) -> None:
+    assert is_due(_NOW - age, _DAILY, _NOW) is due
+
+
+def test_next_due_is_90_percent_of_the_interval_after_the_last_success() -> None:
+    assert next_due(_NOW, _DAILY) == _NOW + timedelta(hours=21, minutes=36)

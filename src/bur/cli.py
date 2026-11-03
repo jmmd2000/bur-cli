@@ -9,7 +9,7 @@ from typing import Annotated
 
 import typer
 
-from bur import discovery, runner
+from bur import discovery, health, runner
 from bur.config import Config, ConfigError, load_config
 from bur.container import ContainerError
 from bur.crypto import CryptoError
@@ -18,7 +18,13 @@ from bur.dockerpg import DockerCommandError
 from bur.manifest import ManifestError
 from bur.naming import InvalidBackupName, format_timestamp, parse_timestamp
 from bur.runner import BackupError, DrillError
-from bur.status import DatabaseStatus, app_runs, database_status, undiscovered_apps
+from bur.status import (
+    DatabaseStatus,
+    app_runs,
+    database_status,
+    last_success,
+    undiscovered_apps,
+)
 from bur.storage import BackupNotFound
 from bur.units import readable_age, readable_size
 
@@ -50,6 +56,9 @@ def backup(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Check space and report, but write nothing")
     ] = False,
+    due: Annotated[
+        bool, typer.Option("--due", help="Back up only the databases due by their schedule")
+    ] = False,
 ) -> None:
     """Back up every discovered database to encrypted local files"""
     config = _load_config_or_exit(config_path)
@@ -74,9 +83,12 @@ def backup(
         typer.echo("no databases have opted in")
         return
 
+    now = datetime.now(UTC)
     for target in targets:
         if target.excluded:
             typer.echo(f"{target.app}: excluded, skipped")
+            continue
+        if due and not _is_due(config, target, now):
             continue
         if not _back_up_target(config, target, dry_run):
             failures += 1
@@ -96,6 +108,16 @@ def _check_only_target(only: str, targets: list[DBTarget], problems: list[LabelP
     if all(target.excluded for target in targets):
         typer.secho(f"{only} is excluded in the config", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
+
+
+def _is_due(config: Config, target: DBTarget, now: datetime) -> bool:
+    """Whether a database is due a backup, printing when it is next due if not"""
+    previous = last_success(config, target.app)
+    if previous is None or health.is_due(previous, target.interval, now):
+        return True
+    next_time = health.next_due(previous, target.interval)
+    typer.echo(f"{target.app}: not due until {format_timestamp(next_time)}, skipped")
+    return False
 
 
 def _back_up_target(config: Config, target: DBTarget, dry_run: bool) -> bool:

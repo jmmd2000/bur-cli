@@ -632,3 +632,21 @@ def test_status_app_fails_when_it_has_no_backups(monkeypatch: pytest.MonkeyPatch
     outcome = _cli.invoke(app, ["status", "giftring"])
 
     assert outcome.exit_code == 1
+
+
+def test_due_skips_a_database_that_is_not_due(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch)
+    _patch_discover(
+        monkeypatch, Discovered([_target("giftring"), _target("issues"), _target("new")], [])
+    )
+    calls: list[dict[str, object]] = []
+    _patch_backup(monkeypatch, calls)
+    just_now = datetime.now(UTC)
+    last_week = just_now - timedelta(days=8)
+    previous = {"giftring": just_now, "issues": last_week, "new": None}
+    monkeypatch.setattr(cli, "last_success", lambda config, app_name: previous[app_name])
+
+    outcome = _cli.invoke(app, ["backup", "--due"])
+
+    assert outcome.exit_code == 0
+    assert [call["app"] for call in calls] == ["issues", "new"]

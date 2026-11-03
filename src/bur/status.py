@@ -51,6 +51,19 @@ def database_status(config: Config, target: DBTarget, now: datetime) -> Database
     return DatabaseStatus(target, evaluated, _dump_size(newest, _dump_sizes(config, target.app)))
 
 
+def last_success(config: Config, app: str) -> datetime | None:
+    """Find the timestamp of an app's newest complete backup
+
+    :param config: Loaded configuration (backup root)
+    :param app: Application to look up
+    :returns: The timestamp, or None if the app has no complete backup
+    """
+    newest = _newest_complete_run(config, app)
+    if newest is None:
+        return None
+    return newest.timestamp
+
+
 def app_runs(config: Config, app: str) -> list[RunSummary]:
     """List every stored backup run for one app, newest first
 

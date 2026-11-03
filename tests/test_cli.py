@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -388,6 +388,7 @@ def _target(app_name: str = "giftring", excluded: bool = False) -> DBTarget:
         user="gift_owner",
         keep_last=3,
         schedule="weekly",
+        interval=timedelta(weeks=1),
         excluded=excluded,
     )
 

@@ -619,7 +619,7 @@ def test_status_prints_json(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_status_app_lists_its_runs(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_config(monkeypatch)
-    run = RunSummary(datetime(2026, 6, 3, 17, 48, tzinfo=UTC), True, 4096)
+    run = RunSummary(datetime(2026, 6, 3, 17, 48, tzinfo=UTC), True, 4096, "both")
     monkeypatch.setattr(cli, "app_runs", lambda config, app_name: [run])
 
     outcome = _cli.invoke(app, ["status", "giftring", "--json"])
@@ -627,7 +627,7 @@ def test_status_app_lists_its_runs(monkeypatch: pytest.MonkeyPatch) -> None:
     assert outcome.exit_code == 0
     content = json.loads(outcome.stdout)
     assert content["runs"] == [
-        {"timestamp": "20260603T174800Z", "complete": True, "dump_size": 4096}
+        {"timestamp": "20260603T174800Z", "complete": True, "dump_size": 4096, "location": "both"}
     ]
 
 

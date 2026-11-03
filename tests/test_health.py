@@ -32,6 +32,21 @@ def test_a_backup_is_overdue_after_its_interval_plus_the_grace(age: timedelta, l
     assert health.age == age
 
 
+@pytest.mark.parametrize(
+    ("age", "offsite", "level"),
+    [
+        (timedelta(hours=3), False, "local_only"),
+        (timedelta(hours=3), None, "ok"),
+        (timedelta(hours=3), True, "ok"),
+        (timedelta(hours=49), False, "overdue"),
+    ],
+)
+def test_a_backup_missing_from_the_remote_is_local_only(
+    age: timedelta, offsite: bool | None, level: str
+) -> None:
+    assert evaluate(_NOW - age, _DAILY, 24, _NOW, offsite).level == level
+
+
 def test_a_database_with_no_backup_is_due() -> None:
     assert is_due(None, _DAILY, _NOW) is True
 
